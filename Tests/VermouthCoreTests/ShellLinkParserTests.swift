@@ -151,6 +151,47 @@ final class ShellLinkParserTests: XCTestCase {
         XCTAssertEqual(info.targetPath, ".\\fallback.exe")
     }
 
+    func testLinkInfoWithoutVolumeIDAndLocalBasePathIgnoresBareCommonPathSuffixAndFallsBackToRelativePath() throws {
+        // B-8: When LinkInfoFlags has VolumeIDAndLocalBasePath == 0 (e.g. 0x02 CommonNetworkRelativeLinkAndPathSuffix),
+        // parser must NOT return a bare CommonPathSuffix and must fall back cleanly to HasRelativePath.
+        var linkInfo = [UInt8](repeating: 0, count: 36)
+        writeUInt32LE(0x24, into: &linkInfo, at: 4) // LinkInfoHeaderSize = 36
+        writeUInt32LE(0x02, into: &linkInfo, at: 8) // VolumeIDAndLocalBasePath == 0, CommonNetworkRelativeLinkAndPathSuffix == 1
+
+        let ansiSuffixOffset = UInt32(linkInfo.count)
+        writeUInt32LE(ansiSuffixOffset, into: &linkInfo, at: 24)
+        linkInfo.append(contentsOf: "subdir\\bare-suffix.exe".utf8)
+        linkInfo.append(0x00)
+
+        let unicodeSuffixOffset = UInt32(linkInfo.count)
+        writeUInt32LE(unicodeSuffixOffset, into: &linkInfo, at: 32)
+        linkInfo.append(contentsOf: encodeUTF16LE("subdir\\bare-suffix.exe"))
+        linkInfo.append(contentsOf: [0x00, 0x00])
+
+        writeUInt32LE(UInt32(linkInfo.count), into: &linkInfo, at: 0)
+
+        // Case 1: With HasRelativePath + HasWorkingDir -> falls back to RelativePath
+        let flagsWithRelative: UInt32 =
+            Self.flagHasLinkInfo | Self.flagHasRelativePath | Self.flagHasWorkingDir | Self.flagIsUnicode
+        var bytesWithRelative = makeHeader(linkFlags: flagsWithRelative)
+        bytesWithRelative.append(contentsOf: linkInfo)
+        appendStringData("..\\Games\\RealApp.exe", isUnicode: true, to: &bytesWithRelative)
+        appendStringData("..\\Games", isUnicode: true, to: &bytesWithRelative)
+
+        let withRelativeInfo = try ShellLinkParser.parse(data: Data(bytesWithRelative))
+        XCTAssertEqual(withRelativeInfo.targetPath, "..\\Games\\RealApp.exe")
+        XCTAssertNotEqual(withRelativeInfo.targetPath, "subdir\\bare-suffix.exe")
+        XCTAssertEqual(withRelativeInfo.workingDirectory, "..\\Games")
+
+        // Case 2: Without HasRelativePath -> targetPath must be nil rather than bare CommonPathSuffix
+        let flagsWithoutRelative: UInt32 = Self.flagHasLinkInfo | Self.flagIsUnicode
+        var bytesWithoutRelative = makeHeader(linkFlags: flagsWithoutRelative)
+        bytesWithoutRelative.append(contentsOf: linkInfo)
+
+        let withoutRelativeInfo = try ShellLinkParser.parse(data: Data(bytesWithoutRelative))
+        XCTAssertNil(withoutRelativeInfo.targetPath)
+    }
+
     // MARK: - Negative & Malformed Cases
 
     func testParseTooSmallFileThrowsInvalidShellLink() throws {

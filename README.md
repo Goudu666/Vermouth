@@ -10,7 +10,7 @@ Vermouth 基于开源 Wine 与开源图形转译栈（`DXMT` / `DXVK-macOS` / `W
 
 ## 规划核心能力（v0.1）
 
-- **环境预检与引擎管理**：只读检测 Apple Silicon、Rosetta 2、Homebrew 与本机多套 Wine 引擎（优先支持 `gcenx/wine/wine-crossover`）。
+- **环境预检与引擎管理**：只读检测 Apple Silicon、Rosetta 2、Homebrew 与本机多套 Wine 引擎（平等兼容 `wine-stable` 11.x WoW64、`wine@staging`、`Wine Crossover.app` 与自定义路径）。
 - **容器全生命周期管理**：每个容器由独立 `WINEPREFIX` 与人类可读 `bottle.json` 组成，支持 Windows 版本、MSync/ESync、Retina DPI、Metal Performance HUD 与中文环境一键补全。
 - **容器级图形转译层切换**：按容器部署与回退 `WineD3D`、`DXVK-macOS`、`DXMT`。
 - **安装、启动与配方**：支持 `.exe` / `.msi` 安装运行、可执行程序扫描与 `.recipe.json` 兼容配方。
@@ -21,7 +21,7 @@ Vermouth 基于开源 Wine 与开源图形转译栈（`DXMT` / `DXVK-macOS` / `W
 
 - Apple Silicon Mac（macOS 14 Sonoma 及以上）
 - Apple Command Line Tools（Swift 6 / SwiftPM，无需完整 Xcode）
-- Rosetta 2 与本机安装的开源 Wine 引擎（如 Homebrew Cask `gcenx/wine/wine-crossover`）
+- Rosetta 2 与本机安装的开源 Wine 引擎（推荐 Homebrew Cask `gcenx/wine/wine-stable`，同时兼容 `wine@staging`、`Wine Crossover.app` 与自定义目录）
 
 ## 合规声明
 

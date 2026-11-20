@@ -201,8 +201,20 @@ public enum ShellLinkParser: Sendable {
             return (nil, linkInfoEnd)
         }
 
-        let linkInfoHeaderSize = readUInt32LE(raw, at: startOffset + 4)
+        let linkInfoHeaderSizeU32 = readUInt32LE(raw, at: startOffset + 4)
+        guard linkInfoHeaderSizeU32 >= 28,
+              let linkInfoHeaderSize = Int(exactly: linkInfoHeaderSizeU32),
+              linkInfoHeaderSize <= linkInfoSize
+        else {
+            return (nil, linkInfoEnd)
+        }
+
         let linkInfoFlags = readUInt32LE(raw, at: startOffset + 8)
+        let hasLocalBasePath = (linkInfoFlags & linkInfoFlagVolumeIDAndLocalBasePath) != 0
+        guard hasLocalBasePath else {
+            return (nil, linkInfoEnd)
+        }
+
         let localBasePathOffset = readUInt32LE(raw, at: startOffset + 16)
         let commonPathSuffixOffset = readUInt32LE(raw, at: startOffset + 24)
 
@@ -213,38 +225,41 @@ public enum ShellLinkParser: Sendable {
             commonPathSuffixOffsetUnicode = readUInt32LE(raw, at: startOffset + 32)
         }
 
-        let hasLocalBasePath = (linkInfoFlags & linkInfoFlagVolumeIDAndLocalBasePath) != 0
+        func validatedOffset(_ rawOffset: UInt32) -> Int? {
+            guard rawOffset != 0,
+                  let offset = Int(exactly: rawOffset),
+                  offset >= linkInfoHeaderSize,
+                  offset < linkInfoSize
+            else {
+                return nil
+            }
+            return offset
+        }
 
         var localBasePath: String?
-        if hasLocalBasePath {
-            if localBasePathOffsetUnicode != 0,
-               let offset = Int(exactly: localBasePathOffsetUnicode),
-               offset < linkInfoSize
-            {
-                localBasePath = readNullTerminatedUTF16LE(
-                    raw: raw,
-                    start: startOffset + offset,
-                    end: linkInfoEnd
-                )
-            }
-            if nonEmpty(localBasePath) == nil,
-               localBasePathOffset != 0,
-               let offset = Int(exactly: localBasePathOffset),
-               offset < linkInfoSize
-            {
-                localBasePath = readNullTerminatedANSI(
-                    raw: raw,
-                    start: startOffset + offset,
-                    end: linkInfoEnd
-                )
-            }
+        if let offset = validatedOffset(localBasePathOffsetUnicode) {
+            localBasePath = readNullTerminatedUTF16LE(
+                raw: raw,
+                start: startOffset + offset,
+                end: linkInfoEnd
+            )
+        }
+        if nonEmpty(localBasePath) == nil,
+           let offset = validatedOffset(localBasePathOffset)
+        {
+            localBasePath = readNullTerminatedANSI(
+                raw: raw,
+                start: startOffset + offset,
+                end: linkInfoEnd
+            )
+        }
+
+        guard let resolvedLocalBasePath = nonEmpty(localBasePath) else {
+            return (nil, linkInfoEnd)
         }
 
         var commonPathSuffix: String?
-        if commonPathSuffixOffsetUnicode != 0,
-           let offset = Int(exactly: commonPathSuffixOffsetUnicode),
-           offset < linkInfoSize
-        {
+        if let offset = validatedOffset(commonPathSuffixOffsetUnicode) {
             commonPathSuffix = readNullTerminatedUTF16LE(
                 raw: raw,
                 start: startOffset + offset,
@@ -252,9 +267,7 @@ public enum ShellLinkParser: Sendable {
             )
         }
         if nonEmpty(commonPathSuffix) == nil,
-           commonPathSuffixOffset != 0,
-           let offset = Int(exactly: commonPathSuffixOffset),
-           offset < linkInfoSize
+           let offset = validatedOffset(commonPathSuffixOffset)
         {
             commonPathSuffix = readNullTerminatedANSI(
                 raw: raw,
@@ -263,7 +276,7 @@ public enum ShellLinkParser: Sendable {
             )
         }
 
-        let combined = combineWindowsPath(base: nonEmpty(localBasePath), suffix: nonEmpty(commonPathSuffix))
+        let combined = combineWindowsPath(base: resolvedLocalBasePath, suffix: nonEmpty(commonPathSuffix))
         return (combined, linkInfoEnd)
     }
 

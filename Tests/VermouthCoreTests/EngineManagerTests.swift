@@ -580,10 +580,20 @@ final class EngineManagerTests: XCTestCase {
     }
 
     func testRunPreflightQuarantinedEngineEmitsWarningAndRemediation() async throws {
+        // B-6a: Remediation must target enclosing .app bundle (not .../Contents/Resources/wine),
+        // and warning must still emit even when only 1 of 2 discovered engines is quarantined.
         let appBundle = tempDir.appendingPathComponent("Wine Stable.app", isDirectory: true)
-        let engineRoot = appBundle.appendingPathComponent("Contents/Resources/wine", isDirectory: true)
+        let quarantinedRoot = appBundle.appendingPathComponent("Contents/Resources/wine", isDirectory: true)
         try createFakeWineEngine(
-            at: engineRoot,
+            at: quarantinedRoot,
+            includeWine: true,
+            includeWine64: false,
+            includeWineserver: true,
+            libSubdirectories: ["lib/wine/x86_64-windows", "lib/wine/i386-windows"],
+            ntdllPayload: nil
+        )
+        let cleanRoot = try createFakeWineEngine(
+            named: "clean-wine",
             includeWine: true,
             includeWine64: false,
             includeWineserver: true,
@@ -607,23 +617,42 @@ final class EngineManagerTests: XCTestCase {
                 EngineCandidateRoot(
                     id: "quarantined-wine",
                     displayName: "Wine Stable",
-                    rootPath: engineRoot.path,
+                    rootPath: quarantinedRoot.path,
                     source: .homebrewCask,
                     quarantineCheckPath: appBundle.path
+                ),
+                EngineCandidateRoot(
+                    id: "clean-wine",
+                    displayName: "Clean Wine",
+                    rootPath: cleanRoot.path,
+                    source: .homebrewCask
                 ),
             ]
         )
 
         let report = await manager.runPreflight()
 
-        XCTAssertEqual(report.discoveredEngines.count, 1)
-        XCTAssertEqual(report.discoveredEngines.first?.isQuarantined, true)
+        XCTAssertEqual(report.discoveredEngines.count, 2)
+        XCTAssertEqual(
+            report.discoveredEngines.first(where: { $0.id == "quarantined-wine" })?.isQuarantined,
+            true
+        )
+        XCTAssertEqual(
+            report.discoveredEngines.first(where: { $0.id == "clean-wine" })?.isQuarantined,
+            false
+        )
 
         let enginesItem = try XCTUnwrap(report.items.first(where: { $0.id == "wine-engines" }))
         XCTAssertEqual(enginesItem.status, .warning)
+
         let remediation = try XCTUnwrap(enginesItem.remediationCommand)
-        XCTAssertTrue(remediation.hasPrefix("xattr -dr com.apple.quarantine "))
-        // Verify POSIX single-quoting was applied because rootPath contains a space ("Wine Stable.app")
+        let expectedBundleTarget = ShellQuoting.posixEscape(appBundle.standardizedFileURL.path)
+        XCTAssertEqual(remediation, "xattr -dr com.apple.quarantine \(expectedBundleTarget)")
+        XCTAssertFalse(
+            remediation.contains("Contents/Resources/wine"),
+            "Quarantine remediation must point to enclosing .app bundle, not internal wine dir: \(remediation)"
+        )
+        // Verify POSIX single-quoting was applied because the .app bundle name contains a space
         XCTAssertTrue(remediation.contains("'"))
     }
 
@@ -658,18 +687,170 @@ final class EngineManagerTests: XCTestCase {
             ]
         )
 
-        let report = await manager.runPreflight()
+        // macOS 13.6.0 does not satisfy macOS 14.0+ requirement -> isReadyToLaunch must be false
+        let report13 = await manager.runPreflight()
 
-        XCTAssertEqual(report.items.first(where: { $0.id == "host-architecture" })?.status, .warning)
-        XCTAssertEqual(report.items.first(where: { $0.id == "os-version" })?.status, .fail)
-        XCTAssertEqual(report.items.first(where: { $0.id == "rosetta2" })?.status, .pass)
-        XCTAssertEqual(report.items.first(where: { $0.id == "homebrew" })?.status, .warning)
-        XCTAssertEqual(report.items.first(where: { $0.id == "winetricks" })?.status, .warning)
-        // On x86_64, Rosetta 2 is not required for launch readiness
-        XCTAssertTrue(report.isReadyToLaunch)
+        XCTAssertEqual(report13.items.first(where: { $0.id == "host-architecture" })?.status, .warning)
+        XCTAssertEqual(report13.items.first(where: { $0.id == "os-version" })?.status, .fail)
+        XCTAssertEqual(report13.items.first(where: { $0.id == "rosetta2" })?.status, .pass)
+        XCTAssertEqual(report13.items.first(where: { $0.id == "homebrew" })?.status, .warning)
+        XCTAssertEqual(report13.items.first(where: { $0.id == "winetricks" })?.status, .warning)
+        XCTAssertFalse(report13.isReadyToLaunch)
+
+        // Upgrading to macOS 14.0 on Intel x86_64 without Rosetta 2 -> isReadyToLaunch must be true
+        prober.osVersion = OSVersionInfo(major: 14, minor: 0, patch: 0, displayString: "macOS 14.0.0")
+        let report14 = await manager.runPreflight()
+
+        XCTAssertEqual(report14.items.first(where: { $0.id == "host-architecture" })?.status, .warning)
+        XCTAssertEqual(report14.items.first(where: { $0.id == "os-version" })?.status, .pass)
+        XCTAssertEqual(report14.items.first(where: { $0.id == "rosetta2" })?.status, .pass)
+        XCTAssertTrue(report14.isReadyToLaunch)
     }
 
-    // MARK: - Swift 6 Concurrency Safety
+    // MARK: - B-6b & B-6c Regression Tests
+
+    func testNonZeroVersionProbeWithDyldStderrDoesNotFalselyTriggerNewWoW64() async throws {
+        // B-6b / L-016: Dual-binary engine (both wine & wine64 present) with i386-windows;
+        // if `wine --version` exits non-zero printing `dyld[1234]: Library not loaded` to stderr,
+        // version must be "unknown" and `1234` must NOT be parsed as major version >= 9.
+        let engineRoot = try createFakeWineEngine(
+            named: "dyld-broken-wine",
+            includeWine: true,
+            includeWine64: true,
+            includeWineserver: true,
+            libSubdirectories: ["lib/wine/x86_64-windows", "lib/wine/i386-windows"],
+            ntdllPayload: nil
+        )
+        let wineBin = engineRoot.appendingPathComponent("bin/wine").path
+
+        let runner = MockCommandRunner(
+            resultsByExecutable: [
+                wineBin: CommandResult(
+                    exitCode: 1,
+                    stdout: "",
+                    stderr: "dyld[1234]: Library not loaded: @rpath/libwine.dylib\n"
+                ),
+            ]
+        )
+        let manager = EngineManager(
+            paths: paths,
+            commandRunner: runner,
+            systemProber: MockSystemProber(),
+            candidateRoots: [
+                EngineCandidateRoot(
+                    id: "dyld-broken",
+                    displayName: "Broken Wine",
+                    rootPath: engineRoot.path,
+                    source: .homebrewCask
+                ),
+            ]
+        )
+
+        let engines = try await manager.listEngines()
+        let engine = try XCTUnwrap(engines.first)
+        XCTAssertEqual(engine.version, "unknown")
+        XCTAssertFalse(
+            engine.capabilities.isNewWoW64,
+            "PID 1234 from non-zero dyld stderr must not falsely trigger isNewWoW64"
+        )
+        XCTAssertNil(EngineManager.parseMajorVersion(from: "dyld[1234]: Library not loaded"))
+
+        // Even if stdout contained a version string, non-zero exitCode must still return "unknown"
+        runner.setResult(
+            CommandResult(exitCode: 1, stdout: "wine-11.0\n", stderr: "dyld[5678]: crash\n"),
+            forExecutable: wineBin
+        )
+        let enginesAfterNonZeroStdout = try await manager.listEngines()
+        let engineAfterNonZeroStdout = try XCTUnwrap(enginesAfterNonZeroStdout.first)
+        XCTAssertEqual(engineAfterNonZeroStdout.version, "unknown")
+        XCTAssertFalse(engineAfterNonZeroStdout.capabilities.isNewWoW64)
+    }
+
+    func testHomebrewSymlinkIntoAppBundleDeduplicatesIntoSingleEngineWithFullCapabilities() async throws {
+        // B-6c / L-016: Homebrew Cask installs `/Applications/Wine Stable.app/Contents/Resources/wine`
+        // and symlinks `/opt/homebrew/bin/{wine,wineserver}` into that `.app` bundle (without `/opt/homebrew/lib/wine`).
+        let fakeApps = tempDir.appendingPathComponent("fake-apps", isDirectory: true)
+        let appBundle = fakeApps.appendingPathComponent("Wine Stable.app", isDirectory: true)
+        let appEngineRoot = appBundle.appendingPathComponent("Contents/Resources/wine", isDirectory: true)
+        try createFakeWineEngine(
+            at: appEngineRoot,
+            includeWine: true,
+            includeWine64: false,
+            includeWineserver: true,
+            libSubdirectories: ["lib/wine/x86_64-windows", "lib/wine/i386-windows", "lib/wine/x86_64-unix"],
+            ntdllPayload: Data("ELF\0WINEMSYNC\0WINEDLLPATH_PREPEND\0".utf8)
+        )
+
+        let fakeHomebrew = tempDir.appendingPathComponent("fake-homebrew", isDirectory: true)
+        let fakeHomebrewBin = fakeHomebrew.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: fakeHomebrewBin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: fakeHomebrewBin.appendingPathComponent("wine"),
+            withDestinationURL: appEngineRoot.appendingPathComponent("bin/wine")
+        )
+        try FileManager.default.createSymbolicLink(
+            at: fakeHomebrewBin.appendingPathComponent("wineserver"),
+            withDestinationURL: appEngineRoot.appendingPathComponent("bin/wineserver")
+        )
+
+        let appCandidate = EngineCandidateRoot(
+            id: "app-wine-stable",
+            displayName: "Wine Stable",
+            rootPath: appEngineRoot.path,
+            source: .homebrewCask,
+            quarantineCheckPath: appBundle.path
+        )
+        let homebrewCandidate = EngineCandidateRoot(
+            id: "homebrew-arm64",
+            displayName: "Homebrew Wine",
+            rootPath: fakeHomebrew.path,
+            source: .homebrewCask
+        )
+
+        let runner = MockCommandRunner(
+            defaultResult: CommandResult(exitCode: 0, stdout: "wine-11.0\n", stderr: "")
+        )
+        let prober = MockSystemProber()
+
+        // Order 1: .app candidate before Homebrew symlink candidate
+        let managerAppFirst = EngineManager(
+            paths: paths,
+            commandRunner: runner,
+            systemProber: prober,
+            candidateRoots: [appCandidate, homebrewCandidate]
+        )
+        let enginesAppFirst = try await managerAppFirst.listEngines()
+        XCTAssertEqual(enginesAppFirst.count, 1, "Homebrew symlink must deduplicate with enclosing .app engine")
+        let engineAppFirst = try XCTUnwrap(enginesAppFirst.first)
+        XCTAssertEqual(engineAppFirst.id, "app-wine-stable")
+        XCTAssertTrue(engineAppFirst.capabilities.isNewWoW64)
+        XCTAssertTrue(engineAppFirst.capabilities.supports32Bit)
+        XCTAssertTrue(engineAppFirst.capabilities.supports64Bit)
+        XCTAssertTrue(engineAppFirst.capabilities.supportsMSync)
+        XCTAssertTrue(engineAppFirst.capabilities.supportsWineDLLPathPrepend)
+
+        // Order 2: Homebrew symlink candidate before .app candidate must still resolve full capabilities & deduplicate
+        let managerBrewFirst = EngineManager(
+            paths: paths,
+            commandRunner: runner,
+            systemProber: prober,
+            candidateRoots: [homebrewCandidate, appCandidate]
+        )
+        let enginesBrewFirst = try await managerBrewFirst.listEngines()
+        XCTAssertEqual(enginesBrewFirst.count, 1, "Deduplication must hold regardless of candidate ordering")
+        let engineBrewFirst = try XCTUnwrap(enginesBrewFirst.first)
+        XCTAssertEqual(
+            URL(fileURLWithPath: engineBrewFirst.rootPath).resolvingSymlinksInPath().standardizedFileURL.path,
+            appEngineRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        XCTAssertTrue(engineBrewFirst.capabilities.isNewWoW64)
+        XCTAssertTrue(engineBrewFirst.capabilities.supports32Bit)
+        XCTAssertTrue(engineBrewFirst.capabilities.supports64Bit)
+        XCTAssertTrue(engineBrewFirst.capabilities.supportsMSync)
+        XCTAssertTrue(engineBrewFirst.capabilities.supportsWineDLLPathPrepend)
+    }
+
+    // MARK: - Swift 6 Concurrency Safety & B-4 Atomic Config Mutations
 
     func testConcurrentPreflightAndListEngines() async throws {
         let engineRoot = try createFakeWineEngine(
@@ -717,6 +898,185 @@ final class EngineManagerTests: XCTestCase {
 
         XCTAssertEqual(results.count, 8)
         XCTAssertTrue(results.allSatisfy { $0 == 1 })
+    }
+
+    func testConcurrentRegisterCustomEngineAndSetDefaultHasNoLostUpdates() async throws {
+        // B-4 / L-015: Concurrent registerCustomEngine + setDefaultEngine must never lose writes in engines.json.
+        let discoveredRoot = try createFakeWineEngine(
+            named: "discovered-base",
+            includeWine: true,
+            includeWine64: false,
+            includeWineserver: true,
+            libSubdirectories: ["lib/wine/x86_64-windows", "lib/wine/i386-windows"],
+            ntdllPayload: nil
+        )
+        let discoveredCandidate = EngineCandidateRoot(
+            id: "discovered-base",
+            displayName: "Base Wine",
+            rootPath: discoveredRoot.path,
+            source: .homebrewCask
+        )
+
+        var customRootPaths: [String] = []
+        for idx in 0..<12 {
+            let root = try createFakeWineEngine(
+                named: "concurrent-custom-\(idx)",
+                includeWine: true,
+                includeWine64: false,
+                includeWineserver: true,
+                libSubdirectories: ["lib/wine/x86_64-windows", "lib/wine/i386-windows"],
+                ntdllPayload: nil
+            )
+            customRootPaths.append(root.path)
+        }
+        let duplicateRaceRoot = try createFakeWineEngine(
+            named: "concurrent-dup-race",
+            includeWine: true,
+            includeWine64: false,
+            includeWineserver: true,
+            libSubdirectories: ["lib/wine/x86_64-windows"],
+            ntdllPayload: nil
+        )
+
+        // Small async delay during `--version` ensures multiple register calls overlap before mutating engines.json.
+        let runner = MockCommandRunner(
+            runHandler: { _ in
+                try? await Task.sleep(nanoseconds: 2_000_000)
+                return CommandResult(exitCode: 0, stdout: "wine-11.0\n", stderr: "")
+            }
+        )
+        let prober = MockSystemProber()
+        let manager = EngineManager(
+            paths: paths,
+            commandRunner: runner,
+            systemProber: prober,
+            candidateRoots: [discoveredCandidate]
+        )
+
+        // Phase 1: Register 8 distinct custom engines concurrently alongside setDefaultEngine calls
+        let firstBatchPaths = Array(customRootPaths[0..<8])
+        let phase1IDs = try await withThrowingTaskGroup(of: String?.self) { group in
+            for (idx, rootPath) in firstBatchPaths.enumerated() {
+                group.addTask {
+                    let engine = try await manager.registerCustomEngine(
+                        name: "Concurrent Custom \(idx)",
+                        rootPath: rootPath
+                    )
+                    return engine.id
+                }
+            }
+            for _ in 0..<4 {
+                group.addTask {
+                    try await manager.setDefaultEngine(id: "discovered-base")
+                    return nil
+                }
+            }
+            var ids: [String] = []
+            for try await maybeID in group {
+                if let id = maybeID {
+                    ids.append(id)
+                }
+            }
+            return ids
+        }
+        XCTAssertEqual(phase1IDs.count, 8)
+        let preferredCustomID = try XCTUnwrap(phase1IDs.sorted().first)
+
+        // Phase 2: Register 4 more custom engines concurrently while switching defaultEngineID to a custom engine
+        let secondBatchPaths = Array(customRootPaths[8..<12])
+        let phase2IDs = try await withThrowingTaskGroup(of: String?.self) { group in
+            for (offset, rootPath) in secondBatchPaths.enumerated() {
+                let idx = 8 + offset
+                group.addTask {
+                    let engine = try await manager.registerCustomEngine(
+                        name: "Concurrent Custom \(idx)",
+                        rootPath: rootPath
+                    )
+                    return engine.id
+                }
+            }
+            for _ in 0..<4 {
+                group.addTask {
+                    try await manager.setDefaultEngine(id: preferredCustomID)
+                    return nil
+                }
+            }
+            var ids: [String] = []
+            for try await maybeID in group {
+                if let id = maybeID {
+                    ids.append(id)
+                }
+            }
+            return ids
+        }
+        XCTAssertEqual(phase2IDs.count, 4)
+
+        // Phase 3: Concurrent duplicate registrations of the same root must atomically admit exactly 1
+        enum DupOutcome: Sendable {
+            case registered(String)
+            case alreadyRegistered
+            case unexpected(String)
+        }
+        let dupRootPath = duplicateRaceRoot.path
+        let dupOutcomes = await withTaskGroup(of: DupOutcome.self) { group in
+            for idx in 0..<4 {
+                group.addTask {
+                    do {
+                        let engine = try await manager.registerCustomEngine(
+                            name: "Dup Race \(idx)",
+                            rootPath: dupRootPath
+                        )
+                        return .registered(engine.id)
+                    } catch let error as VermouthError {
+                        if case .engineAlreadyRegistered = error {
+                            return .alreadyRegistered
+                        }
+                        return .unexpected("\(error)")
+                    } catch {
+                        return .unexpected("\(error)")
+                    }
+                }
+            }
+            var outcomes: [DupOutcome] = []
+            for await outcome in group {
+                outcomes.append(outcome)
+            }
+            return outcomes
+        }
+
+        var dupRegisteredIDs: [String] = []
+        var dupRejectedCount = 0
+        for outcome in dupOutcomes {
+            switch outcome {
+            case let .registered(id):
+                dupRegisteredIDs.append(id)
+            case .alreadyRegistered:
+                dupRejectedCount += 1
+            case let .unexpected(message):
+                XCTFail("Unexpected error during concurrent duplicate registration: \(message)")
+            }
+        }
+        XCTAssertEqual(dupRegisteredIDs.count, 1)
+        XCTAssertEqual(dupRejectedCount, 3)
+
+        // Verify persisted engines.json has zero lost updates
+        let persistedConfig = try VermouthJSON.read(EnginesConfigFile.self, from: paths.enginesConfigURL)
+        let expectedCustomIDs = Set(phase1IDs + phase2IDs + dupRegisteredIDs)
+        XCTAssertEqual(persistedConfig.customEngines.count, 13)
+        XCTAssertEqual(Set(persistedConfig.customEngines.map(\.id)), expectedCustomIDs)
+        XCTAssertEqual(persistedConfig.defaultEngineID, preferredCustomID)
+
+        // Reload via fresh EngineManager instance and verify full state
+        let reloadedManager = EngineManager(
+            paths: paths,
+            commandRunner: runner,
+            systemProber: prober,
+            candidateRoots: [discoveredCandidate]
+        )
+        let reloadedEngines = try await reloadedManager.listEngines()
+        XCTAssertEqual(reloadedEngines.count, 14) // 1 discovered + 13 custom
+        let reloadedDefault = try await reloadedManager.defaultEngine()
+        XCTAssertEqual(reloadedDefault?.id, preferredCustomID)
     }
 
     // MARK: - Fake Wine Engine Fixture Helpers

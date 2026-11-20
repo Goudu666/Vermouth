@@ -53,7 +53,15 @@ jobs:
           "$BIN_PATH/vermouth" --version
           "$BIN_PATH/vermouth" recipes
 
-          echo "==> Verifying Vermouth.app resource bundle layout..."
+          echo "==> Verifying Vermouth.app binaries and resource bundle layout..."
+          test -x "dist/Vermouth.app/Contents/MacOS/Vermouth"
+          test -x "dist/Vermouth.app/Contents/MacOS/vermouth-cli"
+          APP_INODE="$(stat -f %i dist/Vermouth.app/Contents/MacOS/Vermouth)"
+          CLI_INODE="$(stat -f %i dist/Vermouth.app/Contents/MacOS/vermouth-cli)"
+          echo "Inodes: Vermouth=$APP_INODE, vermouth-cli=$CLI_INODE"
+          test "$APP_INODE" != "$CLI_INODE"
+          otool -L dist/Vermouth.app/Contents/MacOS/Vermouth | grep -E "SwiftUI|AppKit"
+
           test -d "dist/Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
           if [[ -n "$(find dist/Vermouth.app -maxdepth 1 -name '*.bundle')" ]]; then
             echo "error: resource bundle must not exist at Vermouth.app root" >&2
@@ -61,5 +69,7 @@ jobs:
           fi
 
           echo "==> Smoke testing bundled companion CLI inside Vermouth.app..."
-          "dist/Vermouth.app/Contents/MacOS/vermouth" --version
-          "dist/Vermouth.app/Contents/MacOS/vermouth" recipes
+          "dist/Vermouth.app/Contents/MacOS/vermouth-cli" --version
+          BUNDLED_RECIPES_OUT="$("dist/Vermouth.app/Contents/MacOS/vermouth-cli" recipes)"
+          echo "$BUNDLED_RECIPES_OUT"
+          echo "$BUNDLED_RECIPES_OUT" | grep -F "Built-in recipes directory:" | grep -F "Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"

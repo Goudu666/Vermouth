@@ -78,6 +78,7 @@ echo "==> SwiftPM bin path: $BIN_PATH"
 
 APP_BINARY="$BIN_PATH/VermouthApp"
 CLI_BINARY="$BIN_PATH/vermouth"
+CORE_RESOURCE_BUNDLE="$BIN_PATH/Vermouth_VermouthCore.bundle"
 
 if [[ ! -x "$APP_BINARY" ]]; then
     echo "error: built VermouthApp binary not found at $APP_BINARY" >&2
@@ -89,36 +90,27 @@ if [[ ! -x "$CLI_BINARY" ]]; then
     exit 1
 fi
 
+if [[ ! -d "$CORE_RESOURCE_BUNDLE" ]]; then
+    echo "error: expected Vermouth_VermouthCore.bundle at $CORE_RESOURCE_BUNDLE" >&2
+    exit 1
+fi
+
 echo "==> Assembling $APP_BUNDLE..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
+# Never place 'vermouth' alongside 'Vermouth' in Contents/MacOS/: on case-insensitive APFS
+# that silently overwrites the GUI binary. Name the bundled companion CLI 'vermouth-cli'.
 cp "$APP_BINARY" "$APP_BUNDLE/Contents/MacOS/Vermouth"
-cp "$CLI_BINARY" "$APP_BUNDLE/Contents/MacOS/vermouth"
-chmod +x "$APP_BUNDLE/Contents/MacOS/Vermouth" "$APP_BUNDLE/Contents/MacOS/vermouth"
+cp "$CLI_BINARY" "$APP_BUNDLE/Contents/MacOS/vermouth-cli"
+chmod +x "$APP_BUNDLE/Contents/MacOS/Vermouth" "$APP_BUNDLE/Contents/MacOS/vermouth-cli"
 
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
-shopt -s nullglob
-RESOURCE_BUNDLES=("$BIN_PATH"/*.bundle)
-shopt -u nullglob
-
-if [[ ${#RESOURCE_BUNDLES[@]} -eq 0 ]]; then
-    echo "error: no SwiftPM *.bundle resources found in $BIN_PATH" >&2
-    exit 1
-fi
-
-for bundle in "${RESOURCE_BUNDLES[@]}"; do
-    bundle_name="$(basename "$bundle")"
-    echo "==> Copying resource bundle $bundle_name into Contents/Resources/"
-    cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/$bundle_name"
-done
-
-if [[ ! -d "$APP_BUNDLE/Contents/Resources/Vermouth_VermouthCore.bundle" ]]; then
-    echo "error: expected Vermouth_VermouthCore.bundle inside $APP_BUNDLE/Contents/Resources/" >&2
-    exit 1
-fi
+# Explicitly copy only Vermouth_VermouthCore.bundle (never wildcard *Tests.bundle).
+echo "==> Copying Vermouth_VermouthCore.bundle into Contents/Resources/"
+cp -R "$CORE_RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/Vermouth_VermouthCore.bundle"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -162,10 +154,40 @@ plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 
 echo "==> Ad-hoc code signing $APP_BUNDLE..."
-codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/vermouth"
+codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/vermouth-cli"
+codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/Vermouth"
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "==> Verifying code signature..."
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
-echo "==> Successfully bundled $APP_BUNDLE"
+echo "==> Running bundle integrity self-checks..."
+if [[ ! -x "$APP_BUNDLE/Contents/MacOS/Vermouth" ]] || [[ ! -x "$APP_BUNDLE/Contents/MacOS/vermouth-cli" ]]; then
+    echo "error: expected executable binaries Contents/MacOS/Vermouth and Contents/MacOS/vermouth-cli" >&2
+    exit 1
+fi
+
+APP_INODE="$(stat -f %i "$APP_BUNDLE/Contents/MacOS/Vermouth")"
+CLI_INODE="$(stat -f %i "$APP_BUNDLE/Contents/MacOS/vermouth-cli")"
+if [[ "$APP_INODE" == "$CLI_INODE" ]]; then
+    echo "error: Contents/MacOS/Vermouth and Contents/MacOS/vermouth-cli share inode $APP_INODE" >&2
+    exit 1
+fi
+
+if ! otool -L "$APP_BUNDLE/Contents/MacOS/Vermouth" | grep -qE "SwiftUI|AppKit"; then
+    echo "error: Contents/MacOS/Vermouth does not link SwiftUI or AppKit (expected GUI binary)" >&2
+    otool -L "$APP_BUNDLE/Contents/MacOS/Vermouth" >&2
+    exit 1
+fi
+
+if [[ ! -d "$APP_BUNDLE/Contents/Resources/Vermouth_VermouthCore.bundle" ]]; then
+    echo "error: expected Vermouth_VermouthCore.bundle inside $APP_BUNDLE/Contents/Resources/" >&2
+    exit 1
+fi
+
+if [[ -n "$(find "$APP_BUNDLE" -maxdepth 1 -name '*.bundle')" ]]; then
+    echo "error: resource bundle must not exist at $APP_BUNDLE root" >&2
+    exit 1
+fi
+
+echo "==> Successfully bundled $APP_BUNDLE (Vermouth inode=$APP_INODE, vermouth-cli inode=$CLI_INODE)"

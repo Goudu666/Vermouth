@@ -51,18 +51,18 @@ private enum VermouthCLIBootstrap {
 
         for fileURL in files {
             do {
-                let data = try Data(contentsOf: fileURL)
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    writeStderr("error: invalid JSON object in \(fileURL.lastPathComponent)")
+                let recipe = try VermouthJSON.read(Recipe.self, from: fileURL)
+                guard recipe.schemaVersion <= Recipe.currentSchemaVersion else {
+                    writeStderr(
+                        "error: unsupported recipe schemaVersion \(recipe.schemaVersion) in \(fileURL.lastPathComponent)"
+                    )
                     return 1
                 }
-                let id = object["id"] as? String ?? fileURL.deletingPathExtension().lastPathComponent
-                let name = object["name"] as? String ?? fileURL.lastPathComponent
-                let backend = object["recommendedBackend"] as? String ?? "unknown"
-                let arch = object["targetArchitecture"] as? String ?? "unknown"
-                print("  - \(id) | \(name) [arch=\(arch), backend=\(backend)] (\(fileURL.lastPathComponent))")
+                print(
+                    "  - \(recipe.id) | \(recipe.name) [arch=\(recipe.targetArchitecture.rawValue), backend=\(recipe.recommendedBackend.rawValue), sync=\(recipe.recommendedSyncMode.rawValue)] (\(fileURL.lastPathComponent))"
+                )
             } catch {
-                writeStderr("error: failed to read recipe \(fileURL.path): \(error.localizedDescription)")
+                writeStderr("error: failed to decode recipe \(fileURL.path): \(error.localizedDescription)")
                 return 1
             }
         }

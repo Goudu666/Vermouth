@@ -5,8 +5,13 @@ import Foundation
 ///
 /// Always probes `Bundle.main.resourceURL` and executable-relative paths before touching
 /// SwiftPM's `Bundle.module` so non-Xcode `.app` bundles never trigger `Bundle.module`'s `fatalError`.
+/// When executing inside a `.app` bundle, source-tree `#filePath` fallback is strictly disabled
+/// so missing or misplaced bundle resources fail loudly.
 public enum VermouthResourceLocator: Sendable {
-    private static let resourceBundleName = "Vermouth_VermouthCore.bundle"
+    private static let resourceBundleNames = [
+        "Vermouth_VermouthCore.bundle",
+        "Vermouth_VermouthCore.resources",
+    ]
     private static let recipeFileSuffix = ".recipe.json"
 
     private final class BundleAnchor: Sendable {}
@@ -21,16 +26,20 @@ public enum VermouthResourceLocator: Sendable {
             }
         }
 
-        // 2. Check SwiftPM / test bundle paths only when not executing inside a `.app` bundle.
-        if !isRunningInsideAppBundle() {
-            for candidate in secondaryBundleCandidates() {
-                if !recipeFiles(in: candidate).isEmpty {
-                    return candidate
-                }
+        // Inside a packaged `.app` bundle, strictly disable Bundle.module and `#filePath`
+        // fallbacks so broken packaging cannot be silently masked by a local source tree.
+        if isRunningInsideAppBundle() {
+            return nil
+        }
+
+        // 2. Check SwiftPM / test bundle paths when not executing inside a `.app` bundle.
+        for candidate in secondaryBundleCandidates() {
+            if !recipeFiles(in: candidate).isEmpty {
+                return candidate
             }
         }
 
-        // 3. Fallback to the source-tree relative directory via `#filePath` if it exists on disk.
+        // 3. Fallback to the source-tree relative directory via `#filePath` (non-.app dev/test only).
         let sourceFallback = sourceTreeRecipesDirectory()
         if !recipeFiles(in: sourceFallback).isEmpty {
             return sourceFallback
@@ -53,27 +62,48 @@ public enum VermouthResourceLocator: Sendable {
     // MARK: - Candidate Resolution
 
     private static func isRunningInsideAppBundle() -> Bool {
-        Bundle.main.bundleURL.pathExtension.lowercased() == "app"
+        if Bundle.main.bundleURL.pathExtension.lowercased() == "app" {
+            return true
+        }
+        if let resolvedExec = Bundle.main.executableURL?.resolvingSymlinksInPath() {
+            let parentMacOS = resolvedExec.deletingLastPathComponent()
+            let parentContents = parentMacOS.deletingLastPathComponent()
+            let parentApp = parentContents.deletingLastPathComponent()
+            if parentMacOS.lastPathComponent == "MacOS",
+               parentContents.lastPathComponent == "Contents",
+               parentApp.pathExtension.lowercased() == "app"
+            {
+                return true
+            }
+        }
+        return false
     }
 
     private static func primaryBundleCandidates() -> [URL] {
         var candidates: [URL] = []
 
         if let mainResourceURL = Bundle.main.resourceURL {
-            candidates.append(contentsOf: expandResourceBundle(at: mainResourceURL.appendingPathComponent(resourceBundleName)))
+            candidates.append(contentsOf: expandResourceBundles(in: mainResourceURL))
             candidates.append(mainResourceURL.appendingPathComponent("Recipes"))
             candidates.append(mainResourceURL.appendingPathComponent("Resources"))
         }
 
-        if let executableDir = Bundle.main.executableURL?.deletingLastPathComponent() {
-            candidates.append(contentsOf: expandResourceBundle(at: executableDir.appendingPathComponent(resourceBundleName)))
-            candidates.append(executableDir.appendingPathComponent("Recipes"))
+        if let executableURL = Bundle.main.executableURL {
+            let executableDirs = deduplicate([
+                executableURL.resolvingSymlinksInPath().deletingLastPathComponent(),
+                executableURL.deletingLastPathComponent(),
+            ])
 
-            let siblingResources = executableDir
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources")
-            candidates.append(contentsOf: expandResourceBundle(at: siblingResources.appendingPathComponent(resourceBundleName)))
-            candidates.append(siblingResources.appendingPathComponent("Recipes"))
+            for executableDir in executableDirs {
+                candidates.append(contentsOf: expandResourceBundles(in: executableDir))
+                candidates.append(executableDir.appendingPathComponent("Recipes"))
+
+                let siblingResources = executableDir
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Resources")
+                candidates.append(contentsOf: expandResourceBundles(in: siblingResources))
+                candidates.append(siblingResources.appendingPathComponent("Recipes"))
+            }
         }
 
         return deduplicate(candidates)
@@ -84,22 +114,16 @@ public enum VermouthResourceLocator: Sendable {
 
         let anchorBundle = Bundle(for: BundleAnchor.self)
         if let anchorResourceURL = anchorBundle.resourceURL {
-            candidates.append(contentsOf: expandResourceBundle(at: anchorResourceURL.appendingPathComponent(resourceBundleName)))
+            candidates.append(contentsOf: expandResourceBundles(in: anchorResourceURL))
         }
-        candidates.append(contentsOf: expandResourceBundle(at: anchorBundle.bundleURL.appendingPathComponent(resourceBundleName)))
+        candidates.append(contentsOf: expandResourceBundles(in: anchorBundle.bundleURL))
         candidates.append(
-            contentsOf: expandResourceBundle(
-                at: anchorBundle.bundleURL
-                    .deletingLastPathComponent()
-                    .appendingPathComponent(resourceBundleName)
+            contentsOf: expandResourceBundles(
+                in: anchorBundle.bundleURL.deletingLastPathComponent()
             )
         )
 
-        candidates.append(
-            contentsOf: expandResourceBundle(
-                at: Bundle.main.bundleURL.appendingPathComponent(resourceBundleName)
-            )
-        )
+        candidates.append(contentsOf: expandResourceBundles(in: Bundle.main.bundleURL))
 
         #if SWIFT_PACKAGE
         if canSafelyAccessModuleBundle(anchorBundle: anchorBundle) {
@@ -140,13 +164,25 @@ public enum VermouthResourceLocator: Sendable {
         searchRoots.append(Bundle.main.bundleURL)
 
         for root in searchRoots {
-            let bundleURL = root.appendingPathComponent(resourceBundleName)
-            if Bundle(url: bundleURL) != nil {
-                return true
+            for bundleName in resourceBundleNames {
+                let bundleURL = root.appendingPathComponent(bundleName)
+                if Bundle(url: bundleURL) != nil {
+                    return true
+                }
             }
         }
 
         return false
+    }
+
+    private static func expandResourceBundles(in containerURL: URL) -> [URL] {
+        var candidates: [URL] = []
+        for bundleName in resourceBundleNames {
+            candidates.append(
+                contentsOf: expandResourceBundle(at: containerURL.appendingPathComponent(bundleName))
+            )
+        }
+        return candidates
     }
 
     private static func expandResourceBundle(at bundleURL: URL) -> [URL] {

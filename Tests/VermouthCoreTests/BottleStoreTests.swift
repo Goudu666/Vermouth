@@ -51,6 +51,11 @@ final class BottleStoreTests: XCTestCase {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
     }
 
+    private func isSymbolicLink(at url: URL) throws -> Bool {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes[.type] as? FileAttributeType) == .typeSymbolicLink
+    }
+
     // MARK: - CRUD Lifecycle
 
     func testCreateLoadAndListBottlesDeterministicOrder() throws {
@@ -212,6 +217,55 @@ final class BottleStoreTests: XCTestCase {
                 return
             }
         }
+    }
+
+    func testSaveBottleTrimsWhitespaceConsistently() throws {
+        // Polish #6: saveBottle must trim leading/trailing whitespace just like createBottle/renameBottle
+        var bottle = try store.createBottle(name: "Original")
+        bottle.name = "  \t Trimmed Save Name  \n "
+        try store.saveBottle(bottle)
+
+        let reloaded = try store.loadBottle(id: bottle.id)
+        XCTAssertEqual(reloaded.name, "Trimmed Save Name")
+
+        for invalidName in ["", "   \t ", "Bad\nName", "Bad\0Name"] {
+            var bad = reloaded
+            bad.name = invalidName
+            XCTAssertThrowsError(try store.saveBottle(bad)) { error in
+                guard case VermouthError.invalidBottleName = error else {
+                    XCTFail("Expected VermouthError.invalidBottleName for \(invalidName.debugDescription), got \(error)")
+                    return
+                }
+            }
+        }
+    }
+
+    func testBottleLifecycleMethodsPersistExactMillisecondTimestampEquality() throws {
+        // B-5 / L-014: Immediately after createBottle, renameBottle, cloneBottle, and importExistingPrefix,
+        // loading from disk must produce an exact `==` Bottle including millisecond timestamps.
+        let created = try store.createBottle(name: "Timestamp Create")
+        XCTAssertEqual(try store.loadBottle(id: created.id), created)
+
+        let renamed = try store.renameBottle(id: created.id, newName: "Timestamp Renamed")
+        XCTAssertEqual(try store.loadBottle(id: renamed.id), renamed)
+
+        let cloned = try store.cloneBottle(id: renamed.id, newName: "Timestamp Cloned")
+        XCTAssertEqual(try store.loadBottle(id: cloned.id), cloned)
+
+        let externalPrefix = try makeFakeExternalPrefix(named: "timestamp-external-prefix")
+        let importedRef = try store.importExistingPrefix(
+            name: "Timestamp Imported Ref",
+            sourcePrefixPath: externalPrefix.path,
+            copyFiles: false
+        )
+        XCTAssertEqual(try store.loadBottle(id: importedRef.id), importedRef)
+
+        let importedCopy = try store.importExistingPrefix(
+            name: "Timestamp Imported Copy",
+            sourcePrefixPath: externalPrefix.path,
+            copyFiles: true
+        )
+        XCTAssertEqual(try store.loadBottle(id: importedCopy.id), importedCopy)
     }
 
     func testRenameBottleTrimsWhitespaceAndRejectsEmpty() throws {
@@ -513,6 +567,110 @@ final class BottleStoreTests: XCTestCase {
         XCTAssertTrue(imported.isExternalPrefix)
         XCTAssertEqual(imported.prefixPath, externalPrefix.path)
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.bottlePrefixURL(id: imported.id).path))
+    }
+
+    func testImportCopyAndCloneFromSymlinkPrefixMaterializeRealDirectoriesAndIsolateFiles() throws {
+        // B-7 / L-016: Copying or cloning a symlinked prefix must dereference the top-level symlink
+        // into a real directory so mutating the new bottle never mutates the original external prefix.
+        let realExternalPrefix = try makeFakeExternalPrefix(named: "real-target-prefix")
+        let originalSaveURL = realExternalPrefix.appendingPathComponent("drive_c/Games/MyGame/important.sav")
+
+        let symlinkPrefix = tempRoot.appendingPathComponent("symlinked-prefix", isDirectory: false)
+        try FileManager.default.createSymbolicLink(
+            atPath: symlinkPrefix.path,
+            withDestinationPath: realExternalPrefix.path
+        )
+        XCTAssertTrue(try isSymbolicLink(at: symlinkPrefix))
+
+        // 1. importExistingPrefix(copyFiles: true) from symlink source
+        let copiedBottle = try store.importExistingPrefix(
+            name: "Copied From Symlink",
+            sourcePrefixPath: symlinkPrefix.path,
+            copyFiles: true
+        )
+        XCTAssertFalse(copiedBottle.isExternalPrefix)
+        XCTAssertEqual(try store.loadBottle(id: copiedBottle.id), copiedBottle)
+
+        let copiedPrefixURL = paths.bottlePrefixURL(id: copiedBottle.id)
+        XCTAssertFalse(try isSymbolicLink(at: copiedPrefixURL), "Copied prefix/ must be a real directory, not a symlink")
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: copiedPrefixURL.path)[.type] as? FileAttributeType,
+            .typeDirectory
+        )
+        let copiedSaveURL = copiedPrefixURL.appendingPathComponent("drive_c/Games/MyGame/important.sav")
+        XCTAssertEqual(try Data(contentsOf: copiedSaveURL), Data("SAVE-SLOT-CONTENT".utf8))
+
+        // Mutating the copied bottle must NOT mutate the original external prefix
+        try Data("MUTATED-IN-COPIED-BOTTLE".utf8).write(to: copiedSaveURL)
+        XCTAssertEqual(try Data(contentsOf: originalSaveURL), Data("SAVE-SLOT-CONTENT".utf8))
+
+        // 2. cloneBottle when source bottle references the symlinked prefix
+        var refBottle = try store.importExistingPrefix(
+            name: "Referenced Symlink",
+            sourcePrefixPath: symlinkPrefix.path,
+            copyFiles: false
+        )
+        XCTAssertTrue(refBottle.isExternalPrefix)
+        refBottle.apps = [
+            AppEntry(
+                name: "Symlinked Game",
+                executablePath: "\(realExternalPrefix.path)/drive_c/Games/MyGame/game.exe",
+                workingDirectory: "\(symlinkPrefix.path)/drive_c/Games/MyGame",
+                snapshotTargets: [
+                    SnapshotTarget(
+                        label: "Future Nested Save",
+                        path: "\(realExternalPrefix.path)/drive_c/nonexistent/deep/slot.sav"
+                    ),
+                ]
+            ),
+        ]
+        try store.saveBottle(refBottle)
+
+        let clonedBottle = try store.cloneBottle(id: refBottle.id, newName: "Cloned From Symlink")
+        XCTAssertFalse(clonedBottle.isExternalPrefix)
+        XCTAssertEqual(try store.loadBottle(id: clonedBottle.id), clonedBottle)
+
+        let clonedPrefixURL = paths.bottlePrefixURL(id: clonedBottle.id)
+        XCTAssertFalse(try isSymbolicLink(at: clonedPrefixURL), "Cloned prefix/ must be a real directory, not a symlink")
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: clonedPrefixURL.path)[.type] as? FileAttributeType,
+            .typeDirectory
+        )
+        let clonedSaveURL = clonedPrefixURL.appendingPathComponent("drive_c/Games/MyGame/important.sav")
+        XCTAssertEqual(try Data(contentsOf: clonedSaveURL), Data("SAVE-SLOT-CONTENT".utf8))
+
+        // App paths pointing via either the real target or symlink (including non-existent deep children, Polish #7)
+        // must rewrite cleanly to the new cloned prefix.
+        let clonedApp = try XCTUnwrap(clonedBottle.apps.first)
+        XCTAssertEqual(clonedApp.executablePath, "\(clonedBottle.prefixPath)/drive_c/Games/MyGame/game.exe")
+        XCTAssertEqual(clonedApp.workingDirectory, "\(clonedBottle.prefixPath)/drive_c/Games/MyGame")
+        XCTAssertEqual(
+            clonedApp.snapshotTargets.first?.path,
+            "\(clonedBottle.prefixPath)/drive_c/nonexistent/deep/slot.sav"
+        )
+
+        // Mutating the cloned bottle must NOT mutate the original external prefix
+        try Data("MUTATED-IN-CLONED-BOTTLE".utf8).write(to: clonedSaveURL)
+        XCTAssertEqual(try Data(contentsOf: originalSaveURL), Data("SAVE-SLOT-CONTENT".utf8))
+
+        // 3. Ancestor-into-descendant recursion guard (L-016)
+        let ancestorPrefix = try makeFakeExternalPrefix(named: "ancestor-prefix-guard")
+        let nestedPaths = VermouthPaths(
+            baseDirectory: ancestorPrefix.appendingPathComponent("vermouth-home", isDirectory: true)
+        )
+        let nestedStore = BottleStore(paths: nestedPaths)
+        XCTAssertThrowsError(
+            try nestedStore.importExistingPrefix(
+                name: "Recursive Copy Guard",
+                sourcePrefixPath: ancestorPrefix.path,
+                copyFiles: true
+            )
+        ) { error in
+            guard case VermouthError.invalidPrefixPath = error else {
+                XCTFail("Expected VermouthError.invalidPrefixPath for ancestor-into-descendant copy, got \(error)")
+                return
+            }
+        }
     }
 
     // MARK: - CRITICAL L-005 Delete Protection Tests

@@ -37,7 +37,7 @@ public final class BottleStore: BottleManaging, Sendable {
             try paths.ensureBaseDirectories()
 
             let id = UUID()
-            let now = Date()
+            let now = VermouthJSON.currentTimestamp()
             let bottleDir = paths.bottleDirectory(id: id)
             let prefixURL = paths.bottlePrefixURL(id: id)
             let fileManager = FileManager.default
@@ -78,11 +78,11 @@ public final class BottleStore: BottleManaging, Sendable {
 
     public func saveBottle(_ bottle: Bottle) throws {
         try withLock {
-            _ = try validateBottleName(bottle.name)
+            let trimmedName = try validateBottleName(bottle.name)
 
             let configURL = paths.bottleConfigURL(id: bottle.id)
             let fileManager = FileManager.default
-            guard fileManager.fileExists(atPath: configURL.path) else {
+            guard regularFileExists(at: configURL, fileManager: fileManager) else {
                 throw VermouthError.bottleNotFound(identifier: bottle.id.uuidString)
             }
 
@@ -94,7 +94,9 @@ public final class BottleStore: BottleManaging, Sendable {
                 )
             }
 
-            try VermouthJSON.writeAtomically(bottle, to: configURL)
+            var normalizedBottle = bottle
+            normalizedBottle.name = trimmedName
+            try VermouthJSON.writeAtomically(normalizedBottle, to: configURL)
         }
     }
 
@@ -103,7 +105,7 @@ public final class BottleStore: BottleManaging, Sendable {
             let trimmedName = try validateBottleName(newName)
             var bottle = try loadBottleUnlocked(id: id)
             bottle.name = trimmedName
-            bottle.updatedAt = Date()
+            bottle.updatedAt = VermouthJSON.currentTimestamp()
             try VermouthJSON.writeAtomically(bottle, to: paths.bottleConfigURL(id: id))
             return bottle
         }
@@ -117,7 +119,9 @@ public final class BottleStore: BottleManaging, Sendable {
 
             let fileManager = FileManager.default
             let sourcePrefixURL = URL(fileURLWithPath: source.prefixPath, isDirectory: true).standardizedFileURL
-            guard directoryExists(at: sourcePrefixURL, fileManager: fileManager) else {
+            // 解析顶层源前缀符号链接，确保复制的是真实目录内容而非指向外部的符号链接（B-7）
+            let resolvedSourcePrefixURL = sourcePrefixURL.resolvingSymlinksInPath().standardizedFileURL
+            guard directoryExists(at: resolvedSourcePrefixURL, fileManager: fileManager) else {
                 throw VermouthError.invalidPrefixPath(
                     path: sourcePrefixURL.path,
                     reason: "源容器 WINEPREFIX 目录不存在，无法克隆"
@@ -125,10 +129,17 @@ public final class BottleStore: BottleManaging, Sendable {
             }
 
             let newID = UUID()
-            let now = Date()
+            let now = VermouthJSON.currentTimestamp()
             let newBottleDir = paths.bottleDirectory(id: newID)
             let newPrefixURL = paths.bottlePrefixURL(id: newID)
             let newBackupsDir = paths.bottleBackupsDirectory(id: newID)
+
+            guard !isPath(newPrefixURL.path, insideOrEqualTo: resolvedSourcePrefixURL.path) else {
+                throw VermouthError.invalidPrefixPath(
+                    path: resolvedSourcePrefixURL.path,
+                    reason: "目标容器目录位于源 WINEPREFIX 目录内部，禁止递归复制"
+                )
+            }
 
             do {
                 try createDirectory(at: newBottleDir, fileManager: fileManager)
@@ -136,7 +147,7 @@ public final class BottleStore: BottleManaging, Sendable {
                 try createDirectory(at: paths.bottleLogsDirectory(id: newID), fileManager: fileManager)
 
                 // APFS 上 FileManager.copyItem 会自动利用 copy-on-write 克隆目录
-                try copyItem(from: sourcePrefixURL, to: newPrefixURL, fileManager: fileManager)
+                try copyItem(from: resolvedSourcePrefixURL, to: newPrefixURL, fileManager: fileManager)
 
                 let sourceGraphicsState = paths.bottleGraphicsStateURL(id: source.id)
                 if fileManager.fileExists(atPath: sourceGraphicsState.path) {
@@ -148,8 +159,11 @@ public final class BottleStore: BottleManaging, Sendable {
                 }
 
                 let sourceBackupsDir = paths.bottleBackupsDirectory(id: source.id)
-                if directoryExists(at: sourceBackupsDir, fileManager: fileManager) {
-                    try copyItem(from: sourceBackupsDir, to: newBackupsDir, fileManager: fileManager)
+                let resolvedSourceBackupsDir = sourceBackupsDir.resolvingSymlinksInPath().standardizedFileURL
+                if directoryExists(at: resolvedSourceBackupsDir, fileManager: fileManager),
+                   !isPath(newBackupsDir.path, insideOrEqualTo: resolvedSourceBackupsDir.path)
+                {
+                    try copyItem(from: resolvedSourceBackupsDir, to: newBackupsDir, fileManager: fileManager)
                 } else {
                     try createDirectory(at: newBackupsDir, fileManager: fileManager)
                 }
@@ -197,8 +211,20 @@ public final class BottleStore: BottleManaging, Sendable {
             try paths.ensureBaseDirectories()
 
             let newID = UUID()
-            let now = Date()
+            let now = VermouthJSON.currentTimestamp()
             let newBottleDir = paths.bottleDirectory(id: newID)
+            let managedPrefixURL = paths.bottlePrefixURL(id: newID)
+
+            // 复制导入时先解析顶层符号链接并阻断父目录向子目录的递归复制（B-7）
+            let resolvedSourcePrefixURL = sourcePrefixURL.resolvingSymlinksInPath().standardizedFileURL
+            if copyFiles {
+                guard !isPath(managedPrefixURL.path, insideOrEqualTo: resolvedSourcePrefixURL.path) else {
+                    throw VermouthError.invalidPrefixPath(
+                        path: resolvedSourcePrefixURL.path,
+                        reason: "目标容器目录位于源 WINEPREFIX 目录内部，禁止递归复制"
+                    )
+                }
+            }
 
             do {
                 try createDirectory(at: newBottleDir, fileManager: fileManager)
@@ -210,8 +236,7 @@ public final class BottleStore: BottleManaging, Sendable {
                 let isExternal: Bool
 
                 if copyFiles {
-                    let managedPrefixURL = paths.bottlePrefixURL(id: newID)
-                    try copyItem(from: sourcePrefixURL, to: managedPrefixURL, fileManager: fileManager)
+                    try copyItem(from: resolvedSourcePrefixURL, to: managedPrefixURL, fileManager: fileManager)
                     finalPrefixPath = managedPrefixURL.path
                     isExternal = false
                 } else {
@@ -478,8 +503,8 @@ public final class BottleStore: BottleManaging, Sendable {
             return rewritten
         }
 
-        let resolvedCandidate = URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().standardizedFileURL.path
-        let resolvedOld = URL(fileURLWithPath: oldPrefix).resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedCandidate = resolveSymlinksResiliently(rawPath)
+        let resolvedOld = resolveSymlinksResiliently(oldPrefix)
         if let rewritten = rewriteIfMatching(
             candidatePath: resolvedCandidate,
             oldPrefixPath: resolvedOld,
@@ -517,8 +542,8 @@ public final class BottleStore: BottleManaging, Sendable {
                 URL(fileURLWithPath: directory).standardizedFileURL.path
             ),
             (
-                URL(fileURLWithPath: candidate).resolvingSymlinksInPath().standardizedFileURL.path,
-                URL(fileURLWithPath: directory).resolvingSymlinksInPath().standardizedFileURL.path
+                resolveSymlinksResiliently(candidate),
+                resolveSymlinksResiliently(directory)
             ),
         ]
 
@@ -532,6 +557,27 @@ public final class BottleStore: BottleManaging, Sendable {
             }
         }
         return false
+    }
+
+    private func resolveSymlinksResiliently(_ path: String) -> String {
+        let fileManager = FileManager.default
+        var current = URL(fileURLWithPath: path).standardizedFileURL
+        var trailingComponents: [String] = []
+
+        while !fileManager.fileExists(atPath: current.path) {
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path {
+                break
+            }
+            trailingComponents.append(current.lastPathComponent)
+            current = parent
+        }
+
+        var resolved = current.resolvingSymlinksInPath().standardizedFileURL
+        for component in trailingComponents.reversed() {
+            resolved = resolved.appendingPathComponent(component)
+        }
+        return resolved.standardizedFileURL.path
     }
 
     private func removeMetadataOnly(for id: UUID, fileManager: FileManager) throws {

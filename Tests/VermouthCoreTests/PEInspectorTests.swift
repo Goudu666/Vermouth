@@ -309,6 +309,24 @@ final class PEInspectorTests: XCTestCase {
         }
     }
 
+    func testInspectDirectoryPathThrowsVermouthErrorCleanly() throws {
+        let dirURL = tempDir.appendingPathComponent("not-a-pe-directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try PEInspector.inspect(fileAtPath: dirURL.path)) { error in
+            guard let vermouthError = error as? VermouthError else {
+                XCTFail("Expected VermouthError when inspecting a directory path, got \(error)")
+                return
+            }
+            switch vermouthError {
+            case .ioError, .invalidPEFile:
+                break
+            default:
+                XCTFail("Expected VermouthError.ioError or .invalidPEFile, got \(vermouthError)")
+            }
+        }
+    }
+
     // MARK: - Binary Synthesis Helpers
 
     private func makePEBinary(

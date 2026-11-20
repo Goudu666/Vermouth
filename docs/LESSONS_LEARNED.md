@@ -24,6 +24,11 @@
 | **L-009** | `.msi`、CJK `.reg` 与进程流陷阱 | ① `msiexec /i /Users/...` 会把开头 `/` 当参数开关报错，且 `.msi` 不是 PE 文件；② 含中文键名（如 `宋体`）的 `.reg` 必须用 UTF-16LE + BOM，`FontLink\SystemLink` 必须为 `REG_MULTI_SZ`；③ `Foundation.Process` 不并发排空 `stdout`/`stderr` 会 64KB 死锁，`terminationHandler` 可能早于管道 EOF 截断最后崩溃日志。 | ① `.msi` 必须转为 `wine msiexec /i Z:\...`（或 `C:\...`）并跳过 `PEInspector`；② `RegistryPatcher` 强制输出 UTF-16LE BOM、`REG_MULTI_SZ` (`hex(7)`) 与 `"Key"=-` 清除语法；③ `LiveCommandRunner` 必须并发读取双管道、按 `\n` 缓冲并容错解码非 UTF-8、等待管道 EOF 后再发 `.exited`、并绑定流取消到 `process.terminate()`。 |
 | **L-010** | 非 Xcode 打包与资源定位 | 非 Xcode 的 `swift build` 生成的 `*.bundle` 资源若未复制进 `Vermouth.app/Contents/Resources/`，`Bundle.module` 运行时会直接 `fatalError`，而放在 `.app` 根目录会导致 `codesign` 失败。 | 从 **Round 1** 起即落地最小 `VermouthApp` + `Scripts/bundle-app.sh` 并在 `macos-15` CI 中跑通 `codesign --verify` + `plutil -lint` + 资源包定位测试，严格践行 PRD §7 前置打包冒烟验证。 |
 | **L-011** | JSON 精度、规范化与快照回滚安全 | ① 标准 `.iso8601` 丢毫秒会导致 `Date` 往返单测不等；② `DllOverride` 大小写未规范化会导致 SwiftUI `ForEach` ID 冲突；③ 快照回滚若未校验 SHA-256 或直接覆盖目标目录，中途失败会清空存档。 | ① 全局使用 `VermouthJSON`（含毫秒 ISO-8601 + 原子写盘）；② `DllOverride` 在 `init` 与 `init(from:)` 统一小写去 `.dll`；③ `SnapshotManager.rollback` 必须先校验 SHA-256 与防路径穿越，再自动做保底快照并用同父目录临时目录原子替换。 |
+| **L-012** | macOS APFS 打包碰撞（Round 1 复盘） | macOS 默认采用大小写不敏感 APFS（含 `macos-15` CI）。在 `Contents/MacOS/` 下同时放入 `Vermouth` 与 `vermouth` 会静默覆写主程序为 CLI，且 `codesign --verify` 与 CLI 冒烟均无法检出！ | `.app` 包内主程序与伴随 CLI 必须使用大小写无关也唯一的文件名（`Vermouth` 与 `vermouth-cli`）；打包脚本与 CI 必须校验二者 inode 不同且 `otool -L` 确认主程序链接 `SwiftUI`/`AppKit`；复制资源包必须按名显式复制，严禁通配 `*Tests.bundle`。 |
+| **L-013** | 资源定位冒烟防假绿（Round 1 复盘） | 在源码检出目录运行 `.app` 内 CLI 冒烟时，`#filePath` 源码树兜底会掩盖损坏或缺失的 `Contents/Resources/*.bundle`，导致 CI 假绿而用户真机崩溃。 | 运行于 `.app` 包内时严禁回退至 `#filePath` 源码目录或 `Bundle.module`；CI 必须断言打包产物实际解析出的资源路径严格位于 `Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle` 内；对 `executableURL` 必须 `resolvingSymlinksInPath()`。 |
+| **L-014** | ISO-8601 毫秒精度与往返相等（Round 1 复盘） | `ISO8601DateFormatter` 对毫秒执行向零截断，非二进制精确小数（如 `.100`）会被截断为 `.099Z`；裸 `Date()` 含微秒精度也会导致 `create` 后立即 `load` 判等失败。 | `VermouthJSON` 编码时间戳必须四舍五入至整数毫秒后确定性输出 `.%03dZ`；所有持久化模型生成当前时间戳统一使用 `VermouthJSON.currentTimestamp()`；单测必须覆盖 `.001`/`.100`/`.999` 与 `create`→`load` 严格相等。 |
+| **L-015** | Shell 预览防注入与 Actor 原子事务（Round 1 复盘） | ① `ShellQuoting.formatCommand` 未校验 env key，恶意配方 key 可注入终端命令，`zsh` 下 `=` 开头 token 会触发路径展开；② 将 Actor 读改写拆为独立 `load()`/`save()` 并在中间 `await` 会引发并发丢写（TOCTOU）。 | ① env key 进入 shell 字符串前必须校验 `^[A-Za-z_][A-Za-z0-9_]*$`，非法 key 通过 `env 'K=V'` 安全转义，含 `=` 命令名及 `=` 开头参数必须单引号包裹；② 所有持久化 Store（如 `EngineConfigStore`、`GraphicsIndexStore`、`SnapshotIndexStore`）的读改写必须收敛在单次无挂起点的原子 `mutate` 事务中。 |
+| **L-016** | 符号链接解引用与子进程退出码门禁（Round 1 复盘） | ① `FileManager.copyItem` 对顶层符号链接目录仅复制链接本身而非目录内容，破坏克隆/复制隔离（L-005）；Homebrew Cask 在 `/opt/homebrew/bin/wine` 的符号链接会产出缺少 `lib/wine/` 的幽灵重复引擎；② 忽略 `exitCode != 0` 回读 `stderr` 会把 `dyld[1234]` 误判为 Wine 版本号。 | ① 复制/克隆前缀前必须对顶层源目录执行 `resolvingSymlinksInPath()` 并禁止祖先向子孙递归复制；引擎探测在缺少 `lib/wine` 时需沿 `bin/wine` 符号链接定位真实根并按规范路径去重；② 任何命令探测（如 `wine --version`）必须先校验 `exitCode == 0`，严禁将非零退出 `stderr` 当正常输出解析。 |
 
 ---
 
@@ -33,10 +38,24 @@
 > - **轮次与交付范围**
 > - **测试结果**（编译状态、单测总数/通过率、边界场景覆盖、CI 状态）
 > - **暴露的问题与根因分析**
-> - **新增约束条目**（编号延续 `L-012`... 并同步补充到上方「生效约束清单」）
+> - **新增约束条目**（编号延续并同步补充到上方「生效约束清单」）
 
 ### Phase 0（架构、技术栈与接口定型 + 对抗审查）
 - **交付范围**：完成成熟项目调研（Whisky/Highball/Barrel/Sikarugir/DXMT/DXVK-macOS）与 Phase 0 三份治理文档（`docs/ARCHITECTURE.md`、`docs/INTERFACES.md`、`docs/LESSONS_LEARNED.md`）。
 - **对抗审查结果**：独立 Phase 0 Reviewer Subagent 检出 5 个未定义契约类型、Swift 6 `async` + `inout` 编译阻断点、DXMT `wineBuiltin` 不能降级 `system32` 复制、`.msi` `msiexec` 路径斜杠陷阱、CJK `.reg` UTF-16LE BOM / `REG_MULTI_SZ` 要求、`Process` 管道死锁与 EOF 截断风险、以及应将 `.app` 打包冒烟提前至 Round 1。
 - **处理与沉淀**：全部问题已在进入编码前修订入 `ARCHITECTURE.md` 与 `INTERFACES.md`，并沉淀为约束 **L-009 ~ L-011**。
-- **状态**：Phase 0 定型完成，等待用户确认后启动 Swarm Round 1。
+
+### Round 1（底座、模型、二进制解析、引擎与容器存储 + 非 Xcode 打包冒烟）
+- **交付范围**：`Package.swift`、`.github/workflows/ci.yml`、`Scripts/bundle-app.sh`、最小 `VermouthApp` & `VermouthCLI`、内置双配方、`Common`（`VermouthPaths`/`VermouthJSON`/`PureSHA256`/`ShellQuoting`/`VermouthResourceLocator`/`VermouthError`）、全套 `Models` & `Protocols`、`PEInspector`、`ShellLinkParser`、`EngineManager`、`BottleStore`。
+- **首轮 CI 验证（Run `44695636063` on `macos-15` arm64）**：Apple Swift 6.1.2 零错误零警告编译通过，80/80 单元测试并行全通，`bundle-app.sh` 与 `codesign --verify` 绿灯。
+- **对抗审查暴露的 8 项阻塞级缺陷（CI 绿灯但对抗审查抓出的真隐患！）**：
+  1. **B-1（P0）**：macOS 大小写不敏感 APFS 下 `Contents/MacOS/Vermouth` 被 `Contents/MacOS/vermouth` 静默覆写，导致 GUI App 启动即退出！
+  2. **B-2（P0）**：`.app` 内未禁用 `#filePath` 源码回退，CI 在仓库内跑冒烟时掩盖潜在的资源包损坏。
+  3. **B-3（安全）**：`ShellQuoting.formatCommand` 未校验 env key 存在命令注入风险，且 `=` 开头 token 在 `zsh` 触发路径展开。
+  4. **B-4（并发）**：`EngineManager` 的 `EngineConfigStore` 将 `load`/`save` 拆跨 `await`，存在并发丢写 TOCTOU。
+  5. **B-5（精度）**：`ISO8601DateFormatter` 毫秒向零截断 `.100` → `.099Z`，且 `BottleStore` 用裸 `Date()` 破坏 `create` 后立即 `load` 的 `==` 相等。
+  6. **B-6（macOS 探测）**：Quarantine 提示路径指向内部 `wine` 目录而非外层 `.app`；`probeWineVersion` 未校验 `exitCode == 0` 误把 `stderr` 当版本号；Homebrew Cask `/opt/homebrew/bin/wine` 符号链接未解引用产生幽灵重复引擎。
+  7. **B-7（数据安全）**：`BottleStore` 复制/克隆符号链接前缀时 `copyItem` 仅复制链接本身而非目录内容。
+  8. **B-8（二进制解析）**：`ShellLinkParser` 在 `VolumeIDAndLocalBasePath == 0` 时返回孤立 `commonPathSuffix` 阻断 `relativePath` 回退。
+- **修复与沉淀**：全部 8 项阻塞级缺陷 + 9 项细节优化已于 Round 1 返修补齐，补充针对性回归测试并沉淀为约束 **L-012 ~ L-016**，直接约束 Round 2 ~ Round 4 开发。
+

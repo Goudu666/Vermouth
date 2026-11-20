@@ -4,24 +4,62 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 /// 全局统一 JSON 编解码与原子落盘工具（符合 L-011 约束）。
-/// - 编码：ISO-8601 UTC 含毫秒精度、`.prettyPrinted`、`.sortedKeys`、`.withoutEscapingSlashes`
+/// - 编码：ISO-8601 UTC 含毫秒精度（四舍五入至整数毫秒，不截断）、`.prettyPrinted`、`.sortedKeys`、`.withoutEscapingSlashes`
 /// - 解码：兼容含毫秒与不含毫秒的 ISO-8601 字符串
 /// - 落盘：同父目录唯一临时文件写入后 POSIX 原子 `rename` 替换
 public enum VermouthJSON {
+    /// 返回量化到整数毫秒的当前时间戳，确保与 `VermouthJSON` 序列化往返精确相等。
+    public static func currentTimestamp() -> Date {
+        let millis = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        return Date(timeIntervalSince1970: Double(millis) / 1000.0)
+    }
+
     public static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .custom { date, encoder in
+            let scaled = date.timeIntervalSince1970 * 1000.0
+            guard scaled.isFinite,
+                  scaled >= Double(Int64.min / 2),
+                  scaled <= Double(Int64.max / 2)
+            else {
+                throw EncodingError.invalidValue(
+                    date,
+                    EncodingError.Context(
+                        codingPath: encoder.codingPath,
+                        debugDescription: "Date out of representable ISO-8601 millisecond range: \(date)"
+                    )
+                )
+            }
+
+            let totalMs = Int64(scaled.rounded())
+            var wholeSeconds = totalMs / 1000
+            var remainderMs = totalMs % 1000
+            if remainderMs < 0 {
+                remainderMs += 1000
+                wholeSeconds -= 1
+            }
+
+            let wholeDate = Date(timeIntervalSince1970: Double(wholeSeconds))
             let formatter = ISO8601DateFormatter()
             if let utc = TimeZone(secondsFromGMT: 0) {
                 formatter.timeZone = utc
             }
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            formatter.formatOptions = [.withInternetDateTime]
+
+            var wholeString = formatter.string(from: wholeDate)
+            if wholeString.hasSuffix("Z") {
+                wholeString.removeLast()
+            }
+
+            let formatted = wholeString + String(format: ".%03dZ", Int(remainderMs))
             var container = encoder.singleValueContainer()
-            try container.encode(formatter.string(from: date))
+            try container.encode(formatted)
         }
         return encoder
     }
@@ -38,7 +76,8 @@ public enum VermouthJSON {
             }
             fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let parsed = fractionalFormatter.date(from: raw) {
-                return parsed
+                let totalMs = Int64((parsed.timeIntervalSince1970 * 1000.0).rounded())
+                return Date(timeIntervalSince1970: Double(totalMs) / 1000.0)
             }
 
             let standardFormatter = ISO8601DateFormatter()
@@ -47,7 +86,8 @@ public enum VermouthJSON {
             }
             standardFormatter.formatOptions = [.withInternetDateTime]
             if let parsed = standardFormatter.date(from: raw) {
-                return parsed
+                let wholeSeconds = Int64(parsed.timeIntervalSince1970.rounded())
+                return Date(timeIntervalSince1970: Double(wholeSeconds))
             }
 
             throw DecodingError.dataCorruptedError(

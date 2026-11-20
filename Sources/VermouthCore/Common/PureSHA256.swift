@@ -74,38 +74,41 @@ public enum PureSHA256 {
             }
         }
 
-        public mutating func finalize() -> [UInt8] {
-            let bitLength = totalByteCount &* 8
-            buffer.append(0x80)
+        public func finalize() -> [UInt8] {
+            var copy = self
+            let bitLength = copy.totalByteCount &* 8
+            copy.buffer.append(0x80)
 
-            if buffer.count > 56 {
-                while buffer.count < 64 {
-                    buffer.append(0)
+            if copy.buffer.count > 56 {
+                while copy.buffer.count < 64 {
+                    copy.buffer.append(0)
                 }
-                buffer.withUnsafeBufferPointer { blockPtr in
+                copy.buffer.withUnsafeBufferPointer { blockPtr in
                     if let ptr = blockPtr.baseAddress {
-                        Self.compress(state: &state, block: ptr)
+                        Self.compress(state: &copy.state, block: ptr)
                     }
                 }
-                buffer.removeAll(keepingCapacity: true)
+                copy.buffer.removeAll(keepingCapacity: true)
             }
 
-            while buffer.count < 56 {
-                buffer.append(0)
+            while copy.buffer.count < 56 {
+                copy.buffer.append(0)
             }
 
             for shift in stride(from: 56, through: 0, by: -8) {
-                buffer.append(UInt8((bitLength >> shift) & 0xff))
+                copy.buffer.append(UInt8((bitLength >> shift) & 0xff))
             }
 
-            buffer.withUnsafeBufferPointer { blockPtr in
+            copy.buffer.withUnsafeBufferPointer { blockPtr in
                 if let ptr = blockPtr.baseAddress {
-                    Self.compress(state: &state, block: ptr)
+                    Self.compress(state: &copy.state, block: ptr)
                 }
             }
-            buffer.removeAll(keepingCapacity: false)
 
-            let words = [state.0, state.1, state.2, state.3, state.4, state.5, state.6, state.7]
+            let words = [
+                copy.state.0, copy.state.1, copy.state.2, copy.state.3,
+                copy.state.4, copy.state.5, copy.state.6, copy.state.7,
+            ]
             var digest: [UInt8] = []
             digest.reserveCapacity(32)
             for word in words {
@@ -117,7 +120,7 @@ public enum PureSHA256 {
             return digest
         }
 
-        public mutating func finalizeHex() -> String {
+        public func finalizeHex() -> String {
             let digest = finalize()
             var hexBytes: [UInt8] = []
             hexBytes.reserveCapacity(64)

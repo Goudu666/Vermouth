@@ -82,6 +82,19 @@ private actor EngineConfigStore {
     func save(_ config: EnginesConfigFile) throws {
         try VermouthJSON.writeAtomically(config, to: configURL)
     }
+
+    /// 在单个 Actor turn 内原子执行「读取 → 变更 → 落盘」，彻底消除并发 TOCTOU 窗口（B-4）。
+    func mutate<T: Sendable>(
+        _ body: @Sendable (inout EnginesConfigFile) throws -> T
+    ) throws -> T {
+        let original = try load()
+        var updated = original
+        let result = try body(&updated)
+        if updated != original {
+            try save(updated)
+        }
+        return result
+    }
 }
 
 /// Wine 引擎发现、确定性只读能力探测、自定义登记与环境预检核心实现（遵循 L-004 / L-005 / L-006）。
@@ -111,9 +124,12 @@ public final class EngineManager: EngineManaging, Sendable {
         self.configStore = EngineConfigStore(configURL: paths.enginesConfigURL)
     }
 
-    /// 标准 macOS 多来源 Wine 引擎探测候选列表（L-004）。
-    public static func defaultMacOSCandidateRoots() -> [EngineCandidateRoot] {
-        [
+    /// 标准 macOS 多来源 Wine 引擎探测候选列表（L-004，含 `/Applications` 与 `~/Applications`）。
+    public static func defaultMacOSCandidateRoots(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [EngineCandidateRoot] {
+        let userApps = homeDirectory.appendingPathComponent("Applications", isDirectory: true)
+        return [
             EngineCandidateRoot(
                 id: "app-wine-stable",
                 displayName: "Wine Stable",
@@ -148,6 +164,27 @@ public final class EngineManager: EngineManaging, Sendable {
                 rootPath: "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver",
                 source: .applicationBundle,
                 quarantineCheckPath: "/Applications/CrossOver.app"
+            ),
+            EngineCandidateRoot(
+                id: "user-app-wine-stable",
+                displayName: "Wine Stable",
+                rootPath: userApps.appendingPathComponent("Wine Stable.app/Contents/Resources/wine").path,
+                source: .homebrewCask,
+                quarantineCheckPath: userApps.appendingPathComponent("Wine Stable.app").path
+            ),
+            EngineCandidateRoot(
+                id: "user-app-wine-staging",
+                displayName: "Wine Staging",
+                rootPath: userApps.appendingPathComponent("Wine Staging.app/Contents/Resources/wine").path,
+                source: .homebrewCask,
+                quarantineCheckPath: userApps.appendingPathComponent("Wine Staging.app").path
+            ),
+            EngineCandidateRoot(
+                id: "user-app-wine-crossover",
+                displayName: "Wine Crossover",
+                rootPath: userApps.appendingPathComponent("Wine Crossover.app/Contents/Resources/wine").path,
+                source: .homebrewCask,
+                quarantineCheckPath: userApps.appendingPathComponent("Wine Crossover.app").path
             ),
             EngineCandidateRoot(
                 id: "homebrew-arm64",
@@ -324,16 +361,24 @@ public final class EngineManager: EngineManaging, Sendable {
             )
         } else {
             let names = discoveredEngines.map(\.name).joined(separator: "、")
-            let allQuarantined = discoveredEngines.allSatisfy(\.isQuarantined)
-            if allQuarantined, let firstEngine = discoveredEngines.first {
-                let escapedPath = ShellQuoting.posixEscape(firstEngine.rootPath)
+            let quarantinedEngines = discoveredEngines.filter(\.isQuarantined)
+            if !quarantinedEngines.isEmpty {
+                var remediationTargets: [String] = []
+                for engine in quarantinedEngines {
+                    let target = Self.enclosingAppBundlePath(for: engine.rootPath) ?? engine.rootPath
+                    let escaped = ShellQuoting.posixEscape(target)
+                    if !remediationTargets.contains(escaped) {
+                        remediationTargets.append(escaped)
+                    }
+                }
+                let quarantinedNames = quarantinedEngines.map(\.name).joined(separator: "、")
                 items.append(
                     PreflightCheckItem(
                         id: "wine-engines",
                         title: "Wine 引擎",
                         status: .warning,
-                        detail: "已检测到 \(discoveredEngines.count) 套 Wine 引擎（\(names)），但带有 macOS 隔离属性 (com.apple.quarantine)，可能被 Gatekeeper 拦截。",
-                        remediationCommand: "xattr -dr com.apple.quarantine \(escapedPath)"
+                        detail: "已检测到 \(discoveredEngines.count) 套 Wine 引擎（\(names)），其中 \(quarantinedNames) 带有 macOS 隔离属性 (com.apple.quarantine)，可能被 Gatekeeper 拦截。",
+                        remediationCommand: "xattr -dr com.apple.quarantine \(remediationTargets.joined(separator: " "))"
                     )
                 )
             } else {
@@ -348,10 +393,12 @@ public final class EngineManager: EngineManaging, Sendable {
             }
         }
 
-        let isReadyToLaunch = (architecture == .arm64 ? rosetta2Ready : true) && !discoveredEngines.isEmpty
+        let isReadyToLaunch = osVersion.isAtLeast(major: 14, minor: 0)
+            && (architecture == .arm64 ? rosetta2Ready : true)
+            && !discoveredEngines.isEmpty
 
         return PreflightReport(
-            checkedAt: Date(),
+            checkedAt: VermouthJSON.currentTimestamp(),
             architecture: architecture,
             osVersion: osVersion,
             rosetta2Ready: rosetta2Ready,
@@ -382,7 +429,8 @@ public final class EngineManager: EngineManaging, Sendable {
 
         for candidate in candidates {
             if let engine = await inspectCandidateIfValid(candidate) {
-                if seenIDs.insert(engine.id).inserted && seenRoots.insert(engine.rootPath).inserted {
+                let canonicalRoot = Self.canonicalPath(engine.rootPath)
+                if seenIDs.insert(engine.id).inserted && seenRoots.insert(canonicalRoot).inserted {
                     results.append(engine)
                 }
             }
@@ -397,8 +445,9 @@ public final class EngineManager: EngineManaging, Sendable {
                 source: .custom
             )
             if let engine = await inspectCandidateIfValid(candidate) {
+                let canonicalRoot = Self.canonicalPath(engine.rootPath)
                 if seenIDs.insert(engine.id).inserted {
-                    seenRoots.insert(engine.rootPath)
+                    seenRoots.insert(canonicalRoot)
                     results.append(engine)
                 }
             }
@@ -416,14 +465,11 @@ public final class EngineManager: EngineManaging, Sendable {
             )
         }
 
-        let resolvedRoot = resolveEffectiveEngineRoot(rootPath)
-        var config = try await configStore.load()
-
-        if let existing = config.customEngines.first(where: {
-            resolveEffectiveEngineRoot($0.rootPath) == resolvedRoot
-        }) {
-            throw VermouthError.engineAlreadyRegistered(id: existing.id)
-        }
+        let expandedInput = Self.expandTilde(rootPath)
+        let resolvedRoot = Self.resolveEffectiveEngineRoot(expandedInput)
+        let quarantinePath = Self.enclosingAppBundlePath(for: resolvedRoot)
+            ?? Self.enclosingAppBundlePath(for: expandedInput)
+            ?? URL(fileURLWithPath: expandedInput).standardizedFileURL.path
 
         let engineID = "custom-\(UUID().uuidString.lowercased())"
         let candidate = EngineCandidateRoot(
@@ -431,26 +477,38 @@ public final class EngineManager: EngineManaging, Sendable {
             displayName: trimmedName,
             rootPath: resolvedRoot,
             source: .custom,
-            quarantineCheckPath: URL(fileURLWithPath: rootPath).standardizedFileURL.path
+            quarantineCheckPath: quarantinePath
         )
 
+        // 先执行只读探测，再在单一原子 actor turn 内完成去重与持久化（B-4）
         let engine = try await inspectCandidateStrict(candidate)
+        let canonicalNewRoot = Self.canonicalPath(engine.rootPath)
 
-        config.customEngines.append(
-            CustomEngineEntry(id: engine.id, name: trimmedName, rootPath: engine.rootPath)
-        )
-        try await configStore.save(config)
+        try await configStore.mutate { config in
+            if let existing = config.customEngines.first(where: {
+                Self.canonicalPath(Self.resolveEffectiveEngineRoot($0.rootPath)) == canonicalNewRoot
+            }) {
+                throw VermouthError.engineAlreadyRegistered(id: existing.id)
+            }
+            config.customEngines.append(
+                CustomEngineEntry(id: engine.id, name: trimmedName, rootPath: engine.rootPath)
+            )
+        }
         return engine
     }
 
     public func unregisterCustomEngine(id: String) async throws {
-        var config = try await configStore.load()
-        if let index = config.customEngines.firstIndex(where: { $0.id == id }) {
+        let removed: Bool = try await configStore.mutate { config in
+            guard let index = config.customEngines.firstIndex(where: { $0.id == id }) else {
+                return false
+            }
             config.customEngines.remove(at: index)
             if config.defaultEngineID == id {
                 config.defaultEngineID = nil
             }
-            try await configStore.save(config)
+            return true
+        }
+        if removed {
             return
         }
 
@@ -479,9 +537,9 @@ public final class EngineManager: EngineManaging, Sendable {
         guard engines.contains(where: { $0.id == id }) else {
             throw VermouthError.engineNotFound(id: id)
         }
-        var config = try await configStore.load()
-        config.defaultEngineID = id
-        try await configStore.save(config)
+        try await configStore.mutate { config in
+            config.defaultEngineID = id
+        }
     }
 
     // MARK: - Private Discovery & Capability Inspection
@@ -519,7 +577,7 @@ public final class EngineManager: EngineManaging, Sendable {
     }
 
     private func inspectCandidateStrict(_ candidate: EngineCandidateRoot) async throws -> WineEngine {
-        let effectiveRoot = resolveEffectiveEngineRoot(candidate.rootPath)
+        let effectiveRoot = Self.resolveEffectiveEngineRoot(candidate.rootPath)
         let rootURL = URL(fileURLWithPath: effectiveRoot, isDirectory: true)
 
         let binURL = rootURL.appendingPathComponent("bin", isDirectory: true)
@@ -528,10 +586,10 @@ public final class EngineManager: EngineManaging, Sendable {
         let wine32on64URL = binURL.appendingPathComponent("wine32on64", isDirectory: false)
         let wineserverURL = binURL.appendingPathComponent("wineserver", isDirectory: false)
 
-        let hasWine = isRegularFile(atPath: wineURL.path)
-        let hasWine64 = isRegularFile(atPath: wine64URL.path)
-        let hasWine32on64 = isRegularFile(atPath: wine32on64URL.path)
-        let hasWineserver = isRegularFile(atPath: wineserverURL.path)
+        let hasWine = Self.isRegularFile(atPath: wineURL.path)
+        let hasWine64 = Self.isRegularFile(atPath: wine64URL.path)
+        let hasWine32on64 = Self.isRegularFile(atPath: wine32on64URL.path)
+        let hasWineserver = Self.isRegularFile(atPath: wineserverURL.path)
 
         guard hasWine || hasWine64 else {
             throw VermouthError.invalidEngineRoot(
@@ -552,19 +610,19 @@ public final class EngineManager: EngineManaging, Sendable {
         let version = await probeWineVersion(wineBinaryPath: wineBinaryPath)
         let majorVersion = Self.parseMajorVersion(from: version)
 
-        let hasI386Windows = isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/i386-windows").path)
-            || isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/i386-windows").path)
-        let hasI386Unix = isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/i386-unix").path)
-            || isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/i386-unix").path)
-        let hasX64Windows = isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/x86_64-windows").path)
-            || isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/x86_64-windows").path)
-        let hasX64Unix = isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/x86_64-unix").path)
-            || isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/x86_64-unix").path)
+        let hasI386Windows = Self.isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/i386-windows").path)
+            || Self.isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/i386-windows").path)
+        let hasI386Unix = Self.isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/i386-unix").path)
+            || Self.isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/i386-unix").path)
+        let hasX64Windows = Self.isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/x86_64-windows").path)
+            || Self.isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/x86_64-windows").path)
+        let hasX64Unix = Self.isDirectory(atPath: rootURL.appendingPathComponent("lib/wine/x86_64-unix").path)
+            || Self.isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine/x86_64-unix").path)
 
-        let isNewWoW64 = hasI386Windows && (
-            (majorVersion ?? 0) >= 9
-                || (!hasWine64 && hasWine && (hasX64Windows || hasX64Unix))
-        )
+        let isNewWoW64 = hasI386Windows
+            && !hasI386Unix
+            && !hasWine32on64
+            && ((majorVersion ?? 0) >= 9 || !hasWine64)
         let supports32Bit = isNewWoW64 || hasI386Unix || hasWine32on64 || (hasWine && hasI386Windows)
         let supports64Bit = hasX64Windows || hasX64Unix || hasWine64
 
@@ -572,6 +630,7 @@ public final class EngineManager: EngineManaging, Sendable {
             rootURL.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so").path,
             rootURL.appendingPathComponent("lib64/wine/x86_64-unix/ntdll.so").path,
             wineserverURL.path,
+            wineBinaryPath,
         ]
         let foundMarkers = Self.scanFilesForMarkers(
             paths: binaryProbePaths,
@@ -586,8 +645,11 @@ public final class EngineManager: EngineManaging, Sendable {
             supportsWineDLLPathPrepend: foundMarkers.contains(0)
         )
 
-        var quarantined = await systemProber.isQuarantined(path: candidate.quarantineCheckPath)
-        if !quarantined && candidate.quarantineCheckPath != wineBinaryPath {
+        let quarantinePath = Self.enclosingAppBundlePath(for: effectiveRoot)
+            ?? Self.enclosingAppBundlePath(for: candidate.quarantineCheckPath)
+            ?? candidate.quarantineCheckPath
+        var quarantined = await systemProber.isQuarantined(path: quarantinePath)
+        if !quarantined && quarantinePath != wineBinaryPath {
             quarantined = await systemProber.isQuarantined(path: wineBinaryPath)
         }
 
@@ -615,31 +677,104 @@ public final class EngineManager: EngineManaging, Sendable {
         )
     }
 
-    private func resolveEffectiveEngineRoot(_ rawPath: String) -> String {
-        let standardized = URL(fileURLWithPath: rawPath).standardizedFileURL.path
-        let directBin = URL(fileURLWithPath: standardized).appendingPathComponent("bin")
-        if isRegularFile(atPath: directBin.appendingPathComponent("wine").path)
-            || isRegularFile(atPath: directBin.appendingPathComponent("wine64").path)
-        {
-            return standardized
-        }
-
-        let nestedCandidates = [
-            "Contents/Resources/wine",
-            "Contents/SharedSupport/CrossOver",
-        ]
-        for relative in nestedCandidates {
-            let nestedRoot = URL(fileURLWithPath: standardized)
-                .appendingPathComponent(relative, isDirectory: true)
-                .standardizedFileURL.path
-            let nestedBin = URL(fileURLWithPath: nestedRoot).appendingPathComponent("bin")
-            if isRegularFile(atPath: nestedBin.appendingPathComponent("wine").path)
-                || isRegularFile(atPath: nestedBin.appendingPathComponent("wine64").path)
-            {
-                return nestedRoot
+    internal static func enclosingAppBundlePath(for path: String) -> String? {
+        let expanded = expandTilde(path)
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL
+        let components = url.pathComponents
+        for (index, component) in components.enumerated() where index > 0 {
+            if component.lowercased().hasSuffix(".app") {
+                var rebuilt = URL(fileURLWithPath: "/", isDirectory: true)
+                for part in components[1...index] {
+                    rebuilt.appendPathComponent(part)
+                }
+                return rebuilt.standardizedFileURL.path
             }
         }
-        return standardized
+        return nil
+    }
+
+    private static func expandTilde(_ rawPath: String) -> String {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if trimmed == "~" {
+            return home
+        }
+        if trimmed.hasPrefix("~/") {
+            return URL(fileURLWithPath: home, isDirectory: true)
+                .appendingPathComponent(String(trimmed.dropFirst(2)))
+                .standardizedFileURL.path
+        }
+        return trimmed
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private static func hasWineLibraryDirectory(under rootPath: String) -> Bool {
+        let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        return isDirectory(atPath: rootURL.appendingPathComponent("lib/wine").path)
+            || isDirectory(atPath: rootURL.appendingPathComponent("lib64/wine").path)
+    }
+
+    internal static func resolveEffectiveEngineRoot(_ rawPath: String) -> String {
+        let expanded = expandTilde(rawPath)
+        let standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+
+        var candidateRoot = standardized
+        let directBin = URL(fileURLWithPath: standardized).appendingPathComponent("bin", isDirectory: true)
+        let directHasWine = isRegularFile(atPath: directBin.appendingPathComponent("wine").path)
+            || isRegularFile(atPath: directBin.appendingPathComponent("wine64").path)
+
+        if !directHasWine {
+            let nestedCandidates = [
+                "Contents/Resources/wine",
+                "Contents/SharedSupport/CrossOver",
+            ]
+            for relative in nestedCandidates {
+                let nestedRoot = URL(fileURLWithPath: standardized)
+                    .appendingPathComponent(relative, isDirectory: true)
+                    .standardizedFileURL.path
+                let nestedBin = URL(fileURLWithPath: nestedRoot).appendingPathComponent("bin", isDirectory: true)
+                if isRegularFile(atPath: nestedBin.appendingPathComponent("wine").path)
+                    || isRegularFile(atPath: nestedBin.appendingPathComponent("wine64").path)
+                {
+                    candidateRoot = nestedRoot
+                    break
+                }
+            }
+        }
+
+        // 若该目录缺少 lib/wine（典型如 /opt/homebrew 下通过符号链接指向 Wine Stable.app 或 Cellar），
+        // 解析 bin/wine 符号链接并回溯到真实引擎根目录以正确探测能力并避免重复项（B-6c）。
+        if !hasWineLibraryDirectory(under: candidateRoot) {
+            let binDir = URL(fileURLWithPath: candidateRoot).appendingPathComponent("bin", isDirectory: true)
+            let binaryURLs = [
+                binDir.appendingPathComponent("wine", isDirectory: false),
+                binDir.appendingPathComponent("wine64", isDirectory: false),
+            ]
+            for binaryURL in binaryURLs where isRegularFile(atPath: binaryURL.path) {
+                let resolvedBinary = binaryURL.resolvingSymlinksInPath().standardizedFileURL
+                var probeDir = resolvedBinary.deletingLastPathComponent()
+                for _ in 0..<3 {
+                    if probeDir.lastPathComponent == "bin" {
+                        let realRoot = probeDir.deletingLastPathComponent().standardizedFileURL.path
+                        if hasWineLibraryDirectory(under: realRoot) {
+                            return realRoot
+                        }
+                    } else if hasWineLibraryDirectory(under: probeDir.path) {
+                        return probeDir.standardizedFileURL.path
+                    }
+                    let parent = probeDir.deletingLastPathComponent()
+                    if parent.path == probeDir.path {
+                        break
+                    }
+                    probeDir = parent
+                }
+            }
+        }
+
+        return candidateRoot
     }
 
     private func probeWineVersion(wineBinaryPath: String) async -> String {
@@ -649,21 +784,16 @@ public final class EngineManager: EngineManaging, Sendable {
             environment: [:],
             inheritEnvironment: true
         )
-        guard let result = try? await commandRunner.run(request) else {
+        guard let result = try? await commandRunner.run(request),
+              result.exitCode == 0
+        else {
             return "unknown"
         }
         let stdoutLine = result.stdout
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
-        if let stdoutLine {
-            return stdoutLine
-        }
-        let stderrLine = result.stderr
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: { !$0.isEmpty })
-        return stderrLine ?? "unknown"
+        return stdoutLine ?? "unknown"
     }
 
     private static func formatDiscoveredName(
@@ -684,25 +814,30 @@ public final class EngineManager: EngineManaging, Sendable {
         return isNewWoW64 ? "\(joined) (WoW64)" : joined
     }
 
-    /// 从 `wine --version` 输出（如 `"wine-11.0"`、`"wine-9.0 (Staging)"`）提取主版本号。
+    /// 从 `wine --version` 输出（如 `"wine-11.0"`、`"wine-9.0 (Staging)"`）严格匹配 `wine-?(\d+)\.(\d+)` 或 `\b(\d+)\.(\d+)` 提取主版本号，防止将进程 PID 等数字误判为版本号（B-6b）。
     internal static func parseMajorVersion(from versionString: String) -> Int? {
-        let lowercased = versionString.lowercased()
-        let searchSlice: Substring
-        if let range = lowercased.range(of: "wine-") {
-            searchSlice = lowercased[range.upperBound...]
-        } else {
-            searchSlice = lowercased[...]
-        }
-
-        var digits = ""
-        for char in searchSlice {
-            if char.isASCII && char.isNumber {
-                digits.append(char)
-            } else if !digits.isEmpty {
-                break
+        let patterns = [
+            #"(?i)wine-?(\d+)\.(\d+)"#,
+            #"\b(\d+)\.(\d+)"#,
+        ]
+        let nsString = versionString as NSString
+        let fullRange = NSRange(location: 0, length: nsString.length)
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else {
+                continue
+            }
+            if let match = regex.firstMatch(in: versionString, range: fullRange),
+               match.numberOfRanges >= 2
+            {
+                let majorRange = match.range(at: 1)
+                if majorRange.location != NSNotFound,
+                   let major = Int(nsString.substring(with: majorRange))
+                {
+                    return major
+                }
             }
         }
-        return Int(digits)
+        return nil
     }
 
     /// 对指定二进制文件执行有限范围分块只读字节扫描，检测 ASCII 符号标记（支持跨 64KB 边界匹配）。
@@ -780,13 +915,13 @@ public final class EngineManager: EngineManaging, Sendable {
         return false
     }
 
-    private func isRegularFile(atPath path: String) -> Bool {
+    private static func isRegularFile(atPath path: String) -> Bool {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
         return exists && !isDir.boolValue
     }
 
-    private func isDirectory(atPath path: String) -> Bool {
+    private static func isDirectory(atPath path: String) -> Bool {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
         return exists && isDir.boolValue

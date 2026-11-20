@@ -73,6 +73,51 @@ final class CommonUtilitiesTests: XCTestCase {
         XCTAssertEqual(digestBytes.last, 0xd1)
     }
 
+    func testPureSHA256PaddingBoundary55And64ByteVectors() {
+        // 55 bytes: 55 + 1 (0x80) == 56 (max single-block message before 56-byte spill)
+        let msg55 = String(repeating: "a", count: 55)
+        let expected55 = "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"
+        XCTAssertEqual(PureSHA256.hash(string: msg55), expected55)
+
+        // 64 bytes: exact 1-block boundary followed by full padding block
+        let msg64 = String(repeating: "a", count: 64)
+        let expected64 = "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+        XCTAssertEqual(PureSHA256.hash(string: msg64), expected64)
+
+        // Verify incremental Context matches on both boundaries
+        var ctx55 = PureSHA256.Context()
+        ctx55.update(Data(msg55.prefix(20).utf8))
+        ctx55.update(Data(msg55.dropFirst(20).utf8))
+        XCTAssertEqual(ctx55.finalizeHex(), expected55)
+
+        var ctx64 = PureSHA256.Context()
+        ctx64.update(Data(msg64.prefix(32).utf8))
+        ctx64.update(Data(msg64.dropFirst(32).utf8))
+        XCTAssertEqual(ctx64.finalizeHex(), expected64)
+    }
+
+    func testPureSHA256ContextIdempotentFinalize() {
+        var context = PureSHA256.Context()
+        context.update(Data("hello ".utf8))
+
+        let expectedPrefixDigest = "5e3235a8346e5a4585f8c58562f5052b8fe26a3bb122e1e96c76784964dfc461"
+        let firstHex = context.finalizeHex()
+        let secondHex = context.finalizeHex()
+        XCTAssertEqual(firstHex, expectedPrefixDigest)
+        XCTAssertEqual(secondHex, firstHex)
+
+        let firstBytes = context.finalize()
+        let secondBytes = context.finalize()
+        XCTAssertEqual(firstBytes, secondBytes)
+        XCTAssertEqual(firstBytes.count, 32)
+
+        // Updating after finalizeHex() must continue cleanly from the unmutated state
+        context.update(Data("world!".utf8))
+        let expectedCombinedDigest = "7509e5bda0c762d2bac7f90d758b5b2263fa01ccbc542ab5e3df163be08e6ca9"
+        XCTAssertEqual(context.finalizeHex(), expectedCombinedDigest)
+        XCTAssertEqual(context.finalizeHex(), expectedCombinedDigest)
+    }
+
     func testPureSHA256HashFileStreamingOver128KB() throws {
         // 200,003 bytes (> 128KB and not a multiple of the 64KB streaming buffer)
         var bytes = [UInt8](repeating: 0, count: 200_003)
@@ -168,6 +213,54 @@ final class CommonUtilitiesTests: XCTestCase {
         XCTAssertEqual(decoded.utcNoFractional, Date(timeIntervalSince1970: 1_755_261_296.0))
         XCTAssertEqual(decoded.offsetNoFractional, Date(timeIntervalSince1970: 1_755_261_296.0))
         XCTAssertEqual(decoded.utcFractional, Date(timeIntervalSince1970: 1_700_000_000.375))
+    }
+
+    func testVermouthJSONNonDyadicNegativeAndCurrentTimestampRoundTrip() throws {
+        struct TimestampBundle: Codable, Equatable {
+            var ms001: Date
+            var ms100: Date
+            var ms200: Date
+            var ms999: Date
+            var neg001: Date
+            var neg100: Date
+            var neg1001: Date
+            var negDay999: Date
+            var now: Date
+        }
+
+        // B-5 / L-014: Non-dyadic milliseconds (.001, .100, .200, .999), pre-1970 negative
+        // milliseconds, and VermouthJSON.currentTimestamp() must all serialize without truncation
+        // and survive Codable round-trip with exact Date equality.
+        let bundle = TimestampBundle(
+            ms001: Date(timeIntervalSince1970: 1_700_000_000.001),
+            ms100: Date(timeIntervalSince1970: 1_700_000_000.100),
+            ms200: Date(timeIntervalSince1970: 1_700_000_000.200),
+            ms999: Date(timeIntervalSince1970: 1_700_000_000.999),
+            neg001: Date(timeIntervalSince1970: -0.001),
+            neg100: Date(timeIntervalSince1970: -0.100),
+            neg1001: Date(timeIntervalSince1970: -1.001),
+            negDay999: Date(timeIntervalSince1970: -86_400.999),
+            now: VermouthJSON.currentTimestamp()
+        )
+
+        let encoded = try VermouthJSON.encode(bundle)
+        let jsonString = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+
+        // Verify deterministic rounded millisecond strings (no .100 -> .099Z truncation)
+        XCTAssertTrue(jsonString.contains("\"2023-11-14T22:13:20.001Z\""))
+        XCTAssertTrue(jsonString.contains("\"2023-11-14T22:13:20.100Z\""))
+        XCTAssertTrue(jsonString.contains("\"2023-11-14T22:13:20.200Z\""))
+        XCTAssertTrue(jsonString.contains("\"2023-11-14T22:13:20.999Z\""))
+
+        // Verify pre-1970 negative millisecond strings
+        XCTAssertTrue(jsonString.contains("\"1969-12-31T23:59:59.999Z\""))
+        XCTAssertTrue(jsonString.contains("\"1969-12-31T23:59:59.900Z\""))
+        XCTAssertTrue(jsonString.contains("\"1969-12-31T23:59:58.999Z\""))
+        XCTAssertTrue(jsonString.contains("\"1969-12-30T23:59:59.001Z\""))
+
+        let decoded = try VermouthJSON.decode(TimestampBundle.self, from: encoded)
+        XCTAssertEqual(decoded, bundle)
+        XCTAssertEqual(decoded.now, bundle.now)
     }
 
     func testVermouthJSONRejectsInvalidDateString() {
@@ -287,6 +380,59 @@ final class CommonUtilitiesTests: XCTestCase {
 
         XCTAssertEqual(formatted, expected)
         XCTAssertEqual(ShellQuoting.formatCommand(executable: "/usr/bin/env"), "/usr/bin/env")
+    }
+
+    func testShellQuotingIsValidPOSIXIdentifierAndLeadingEqualsDefense() {
+        // B-3 / L-015: POSIX identifier validation
+        XCTAssertTrue(ShellQuoting.isValidPOSIXIdentifier("WINEPREFIX"))
+        XCTAssertTrue(ShellQuoting.isValidPOSIXIdentifier("_FOO_2"))
+        XCTAssertTrue(ShellQuoting.isValidPOSIXIdentifier("_"))
+        XCTAssertTrue(ShellQuoting.isValidPOSIXIdentifier("a"))
+
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier(""))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("1ABC"))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("FOO;id"))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("FOO BAR"))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("A=B"))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("FOO-BAR"))
+        XCTAssertFalse(ShellQuoting.isValidPOSIXIdentifier("FOO\0BAR"))
+
+        // Leading '=' must be single-quoted to prevent macOS zsh EQUALS expansion
+        XCTAssertEqual(ShellQuoting.posixEscape("=foo"), "'=foo'")
+        XCTAssertEqual(ShellQuoting.posixEscape("="), "'='")
+        XCTAssertEqual(ShellQuoting.posixEscape("foo=bar"), "foo=bar")
+    }
+
+    func testShellQuotingFormatCommandBlocksEnvKeyInjectionAndEqualsExecutable() {
+        // B-3 / L-015: Malicious env keys use `env 'KEY=VAL'`, invalid keys with '=' or '\0' or empty are dropped,
+        // and executables containing '=' without leading '/' or './' are single-quoted.
+        let command = ShellQuoting.formatCommand(
+            environment: [
+                "WINEPREFIX": "/tmp/pfx",
+                "FOO; id #": "1",
+                "BAD=KEY": "ignored",
+                "NULL\0KEY": "ignored",
+                "": "ignored",
+            ],
+            executable: "a=b",
+            arguments: ["=foo", "bar=baz"]
+        )
+
+        XCTAssertEqual(command, "WINEPREFIX=/tmp/pfx env 'FOO; id #=1' 'a=b' '=foo' bar=baz")
+        XCTAssertFalse(command.contains("BAD=KEY"))
+        XCTAssertFalse(command.contains("NULL"))
+
+        // Single quotes inside malicious non-identifier key/value are safely escaped
+        let quoteInjection = ShellQuoting.formatCommand(
+            environment: ["BAD'KEY; rm -rf /": "v'1"],
+            executable: "/usr/bin/wine"
+        )
+        XCTAssertEqual(quoteInjection, "env 'BAD'\\''KEY; rm -rf /=v'\\''1' /usr/bin/wine")
+
+        // Path-qualified executables containing '=' do not get misparsed as shell assignments
+        XCTAssertEqual(ShellQuoting.formatCommand(executable: "/tmp/a=b"), "/tmp/a=b")
+        XCTAssertEqual(ShellQuoting.formatCommand(executable: "./a=b"), "./a=b")
+        XCTAssertEqual(ShellQuoting.formatCommand(executable: "=cmd"), "'=cmd'")
     }
 
     func testShellQuotingToWindowsPath() {

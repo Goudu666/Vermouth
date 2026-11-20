@@ -2,43 +2,101 @@ import Foundation
 
 /// POSIX shell 安全引号转义与 Wine Unix/Windows 路径双向转换工具。
 public enum ShellQuoting {
+    /// 检查字符串是否为合法 POSIX 环境变量标识符（`^[A-Za-z_][A-Za-z0-9_]*$`）。
+    public static func isValidPOSIXIdentifier(_ key: String) -> Bool {
+        guard let first = key.unicodeScalars.first else {
+            return false
+        }
+        let firstVal = first.value
+        let isValidStart = (0x41...0x5A).contains(firstVal)
+            || (0x61...0x7A).contains(firstVal)
+            || firstVal == 0x5F
+        guard isValidStart else {
+            return false
+        }
+        return key.unicodeScalars.dropFirst().allSatisfy { scalar in
+            let val = scalar.value
+            return (0x30...0x39).contains(val)
+                || (0x41...0x5A).contains(val)
+                || (0x61...0x7A).contains(val)
+                || val == 0x5F
+        }
+    }
+
     /// 对任意字符串进行 POSIX shell 安全转义。
     /// - 空字符串输出 `''`
-    /// - 仅含 `[A-Za-z0-9_./:@%+=,-]` 的 ASCII token 原样返回
+    /// - 仅含 `[A-Za-z0-9_./:@%+=,-]` 的 ASCII token 且不以 `=` 开头时原样返回（规避 macOS zsh `EQUALS` 展开）
     /// - 其余字符串使用单引号包裹，并将内部 `'` 转为 `'\''`
     public static func posixEscape(_ value: String) -> String {
         if value.isEmpty {
             return "''"
         }
-        if value.unicodeScalars.allSatisfy(isSafeBareTokenScalar) {
+        if !value.hasPrefix("="), value.unicodeScalars.allSatisfy(isSafeBareTokenScalar) {
             return value
         }
-        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
-        return "'\(escaped)'"
+        return singleQuote(value)
     }
 
     /// 将环境变量（按 key 字典序确定性输出）、可执行文件与参数格式化为可直接复制执行的 POSIX 命令字符串。
+    /// - 跳过空 key 以及含 `=` 或 `\0` 的非法 key
+    /// - 合法 POSIX 标识符直接输出 `KEY=VAL`；含空格/元字符等非标准 key 通过 `env 'KEY=VAL'` 隔离防止注入
+    /// - 含 `=` 且不以 `/` 或 `./` 开头的可执行文件名强制单引号包裹，防止被 shell 误判为环境变量赋值
     public static func formatCommand(
         environment: [String: String] = [:],
         executable: String,
         arguments: [String] = []
     ) -> String {
-        var components: [String] = []
-        components.reserveCapacity(environment.count + 1 + arguments.count)
+        var validEnvAssignments: [String] = []
+        var nonIdentifierEnvAssignments: [String] = []
 
         for key in environment.keys.sorted() {
-            if let value = environment[key] {
-                components.append("\(key)=\(posixEscape(value))")
+            guard !key.isEmpty,
+                  !key.contains("="),
+                  !key.contains("\0"),
+                  let value = environment[key]
+            else {
+                continue
+            }
+
+            if isValidPOSIXIdentifier(key) {
+                validEnvAssignments.append("\(key)=\(posixEscape(value))")
+            } else {
+                nonIdentifierEnvAssignments.append(singleQuote("\(key)=\(value)"))
             }
         }
 
-        components.append(posixEscape(executable))
+        var components: [String] = []
+        components.reserveCapacity(
+            validEnvAssignments.count
+                + (nonIdentifierEnvAssignments.isEmpty ? 0 : nonIdentifierEnvAssignments.count + 1)
+                + 1
+                + arguments.count
+        )
+
+        components.append(contentsOf: validEnvAssignments)
+        if !nonIdentifierEnvAssignments.isEmpty {
+            components.append("env")
+            components.append(contentsOf: nonIdentifierEnvAssignments)
+        }
+
+        let formattedExecutable: String
+        if executable.contains("="), !executable.hasPrefix("/"), !executable.hasPrefix("./") {
+            formattedExecutable = singleQuote(executable)
+        } else {
+            formattedExecutable = posixEscape(executable)
+        }
+        components.append(formattedExecutable)
 
         for argument in arguments {
             components.append(posixEscape(argument))
         }
 
         return components.joined(separator: " ")
+    }
+
+    private static func singleQuote(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
     }
 
     /// 将宿主机 Unix 路径转换为 Wine Windows 路径。

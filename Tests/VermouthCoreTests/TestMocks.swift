@@ -183,15 +183,11 @@ final class MockCommandRunner: CommandRunning, Sendable {
         return AsyncThrowingStream { continuation in
             switch synthesizedOutcome {
             case let .success(result):
-                if !result.stdout.isEmpty {
-                    for line in result.stdout.split(separator: "\n", omittingEmptySubsequences: false) {
-                        continuation.yield(.stdout(String(line)))
-                    }
+                for line in Self.splitOutputLines(result.stdout) {
+                    continuation.yield(.stdout(line))
                 }
-                if !result.stderr.isEmpty {
-                    for line in result.stderr.split(separator: "\n", omittingEmptySubsequences: false) {
-                        continuation.yield(.stderr(String(line)))
-                    }
+                for line in Self.splitOutputLines(result.stderr) {
+                    continuation.yield(.stderr(line))
                 }
                 continuation.yield(.exited(result.exitCode))
                 continuation.finish()
@@ -199,6 +195,15 @@ final class MockCommandRunner: CommandRunning, Sendable {
                 continuation.finish(throwing: error)
             }
         }
+    }
+
+    private static func splitOutputLines(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if text.hasSuffix("\n"), lines.last == "" {
+            lines.removeLast()
+        }
+        return lines
     }
 }
 
