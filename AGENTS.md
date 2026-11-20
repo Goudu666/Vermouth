@@ -25,10 +25,10 @@ Vermouth 是面向 Apple Silicon Mac 的开源、原生 macOS Windows 应用与�
 | macOS 本机 / CI | `swift build && swift test --parallel` | 编译全部三个目标（Core / CLI / App） |
 | macOS 打包 | `./Scripts/bundle-app.sh --configuration debug --output dist` | 生成并 ad-hoc 签名 `dist/Vermouth.app` |
 | Linux 云端（Claude 等） | `sudo ./Scripts/setup-cloud-linux.sh && export PATH=/opt/swift/usr/bin:$PATH` | 安装 Swift 6.3.3；之后可 `swift build` / `swift test`，**只覆盖 Core + CLI** |
-| 权威验证 | GitHub Actions `CI`（`macos-15` arm64） | 推送 `main` / `feat/**` / `fix/**` 或向 `main` 开 PR 时触发；**以 CI 绿灯为准** |
+| 权威验证 | GitHub Actions `CI`：`core-linux`（约 2 分钟）+ `macos-15` arm64（完整编译、测试、打包） | 推送 `main` / `feat/**` / `fix/**` 或向 `main` 开 PR 时触发。`claude/**`、`ag/**` 分支请开**草稿 PR** 来跑 CI；**以 CI 绿灯为准** |
 
 - `VermouthApp`（SwiftUI/AppKit）只能在 macOS 编译。Linux 上改了 App 代码无法本地验证，必须推分支看 CI。
-- Linux 上有 2 个已知的平台差异测试问题（见 `docs/STATUS.md` §3），不代表 macOS 行为。
+- Linux 与 macOS 的 Foundation 有差异：只在一个平台成立的测试用 `#if os(...)` + `XCTSkipIf` 标明原因，不要删测试。
 - 严禁盲写不验证（L-007）：每一轮结束必须拿到 CI 结果再写复盘。
 
 ## 4. 分支与所有权（防止两个 Agent 互相覆盖）

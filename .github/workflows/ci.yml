@@ -19,6 +19,28 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  core-linux:
+    name: Core & CLI fast check (Linux, Swift 6.3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:6.3.3-noble
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build VermouthCore + VermouthCLI
+        run: swift build
+
+      - name: Run unit tests in parallel
+        run: swift test --parallel
+
+      - name: CLI smoke test
+        run: |
+          set -eu
+          BIN_PATH="$(swift build --show-bin-path)"
+          "$BIN_PATH/vermouth" --version
+          "$BIN_PATH/vermouth" recipes
+
   build-and-test-macos:
     name: Build, Test & Bundle (macos-15 arm64)
     runs-on: macos-15

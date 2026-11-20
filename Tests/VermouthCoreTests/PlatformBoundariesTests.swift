@@ -150,6 +150,12 @@ final class PlatformBoundariesTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
+    private static func physicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     private static func isProcessAlive(_ pid: pid_t) -> Bool {
         if kill(pid, 0) == 0 {
             return true
@@ -275,7 +281,9 @@ final class PlatformBoundariesTests: XCTestCase {
         let inheritedLines = inheritedResult.stdout.split(separator: "\n").map(String.init)
         XCTAssertTrue(inheritedLines.contains("PATH_NONEMPTY=yes"))
         XCTAssertTrue(inheritedLines.contains("CUSTOM=inherited-ok"))
-        let expectedResolvedPwd = tempRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        // `URL.resolvingSymlinksInPath()` strips the `/private` prefix on macOS (/var → /private/var symlink),
+        // whereas `/bin/pwd` reports the true physical path. Use realpath(3) to get the kernel's view (L-018).
+        let expectedResolvedPwd = Self.physicalPath(tempRoot.path)
         XCTAssertTrue(inheritedLines.contains("PWD=\(expectedResolvedPwd)"))
 
         // 2. inheritEnvironment == false isolates environment strictly to request.environment (HOME must be absent)
@@ -288,6 +296,36 @@ final class PlatformBoundariesTests: XCTestCase {
         let isolatedResult = try await runner.run(isolatedReq)
         XCTAssertEqual(isolatedResult.exitCode, 0)
         XCTAssertEqual(isolatedResult.stdout, "HOME=\nONLY=strict-isolated")
+    }
+
+    func testLiveCommandRunnerStreamsFirstLineBeforeChildExits() async throws {
+        // L-017: Live log streaming must deliver each line as soon as it is written, NOT when the child exits.
+        // Regression for `FileHandle.read(upToCount:)` blocking on pipes until the buffer is full or EOF.
+        let runner = LiveCommandRunner()
+        let request = CommandRequest(
+            executablePath: "/bin/sh",
+            arguments: ["-c", "echo first-line; sleep 2; echo second-line"],
+            environment: [:],
+            inheritEnvironment: true
+        )
+
+        let startTime = Date()
+        var firstLineLatency: TimeInterval?
+        var sawExit = false
+        for try await chunk in runner.stream(request) {
+            switch chunk {
+            case .stdout("first-line"):
+                firstLineLatency = Date().timeIntervalSince(startTime)
+            case .exited:
+                sawExit = true
+            default:
+                break
+            }
+        }
+
+        let latency = try XCTUnwrap(firstLineLatency, "first-line was never streamed")
+        XCTAssertLessThan(latency, 1.0, "First line must arrive while the child is still sleeping, got \(latency)s")
+        XCTAssertTrue(sawExit)
     }
 
     func testLiveCommandRunnerCancellationTerminatesChildPromptly() async throws {
@@ -569,6 +607,11 @@ final class PlatformBoundariesTests: XCTestCase {
     }
 
     func testLiveHTTPFetcherDownloadReportsProgressWritesAtomicallyAndPreservesFileOnHTTP500() async throws {
+        #if os(Linux)
+        // swift-corelibs-foundation traps (SIGILL) when a custom URLProtocol feeds data into a *download* task;
+        // this is a test-stub limitation of FoundationNetworking, not a Vermouth bug. Vermouth ships on macOS only.
+        try XCTSkipIf(true, "URLProtocol-stubbed download tasks crash in swift-corelibs-foundation on Linux")
+        #endif
         let session = makeStubbedURLSession()
         defer { session.invalidateAndCancel() }
         let fetcher = LiveHTTPFetcher(session: session)

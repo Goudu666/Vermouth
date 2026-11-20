@@ -1,4 +1,11 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// 生产环境子进程调度器（严格遵循 L-009）：
 /// - 并发排空 `stdout` 与 `stderr` 双管道，杜绝 64KB 管道缓冲死锁
@@ -210,8 +217,28 @@ private final class FileHandleBox: @unchecked Sendable {
         self.handle = handle
     }
 
+    /// 单次 POSIX `read(2)`：管道里**有任何字节就立即返回**，保证日志逐行实时送达（L-017）。
+    /// 注意：`FileHandle.read(upToCount:)` 对管道会一直阻塞到凑满 `maxBytes` 或 EOF，
+    /// 导致 Wine 日志只能在进程退出时一次性出现，因此严禁在流式读取中使用。
+    /// 返回 `nil` 表示 EOF 或不可恢复的读错误。
     func readChunk(maxBytes: Int) -> Data? {
-        try? handle.read(upToCount: maxBytes)
+        var buffer = [UInt8](repeating: 0, count: maxBytes)
+        let fd = handle.fileDescriptor
+        while true {
+            let count = buffer.withUnsafeMutableBytes { raw in
+                read(fd, raw.baseAddress, maxBytes)
+            }
+            if count > 0 {
+                return Data(buffer[0..<count])
+            }
+            if count == 0 {
+                return nil
+            }
+            if errno == EINTR {
+                continue
+            }
+            return nil
+        }
     }
 
     func close() {
@@ -246,7 +273,7 @@ private final class ProcessController: @unchecked Sendable {
             return true
         }
         if shouldTerminate && process.isRunning {
-            process.terminate()
+            Self.terminate(process)
         }
     }
 
@@ -267,8 +294,19 @@ private final class ProcessController: @unchecked Sendable {
             return true
         }
         if shouldTerminate && process.isRunning {
-            process.terminate()
+            Self.terminate(process)
         }
+    }
+
+    /// macOS：发送 SIGTERM（`Process.terminate()`），给 Wine 正常退出的机会。
+    /// Linux：swift-corelibs-foundation 从 libdispatch 工作线程 `posix_spawn`，子进程继承了屏蔽 SIGTERM 的信号掩码，
+    /// SIGTERM 永远不会送达（L-018），因此直接发送不可屏蔽的 SIGKILL。
+    fileprivate static func terminate(_ process: Process) {
+        #if os(Linux)
+        _ = kill(process.processIdentifier, SIGKILL)
+        #else
+        process.terminate()
+        #endif
     }
 
     func markFinishedAndGetExitCode() -> Int32? {

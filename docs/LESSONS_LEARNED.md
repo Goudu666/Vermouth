@@ -29,6 +29,8 @@
 | **L-014** | ISO-8601 毫秒精度与往返相等（Round 1 复盘） | `ISO8601DateFormatter` 对毫秒执行向零截断，非二进制精确小数（如 `.100`）会被截断为 `.099Z`；裸 `Date()` 含微秒精度也会导致 `create` 后立即 `load` 判等失败。 | `VermouthJSON` 编码时间戳必须四舍五入至整数毫秒后确定性输出 `.%03dZ`；所有持久化模型生成当前时间戳统一使用 `VermouthJSON.currentTimestamp()`；单测必须覆盖 `.001`/`.100`/`.999` 与 `create`→`load` 严格相等。 |
 | **L-015** | Shell 预览防注入与 Actor 原子事务（Round 1 复盘） | ① `ShellQuoting.formatCommand` 未校验 env key，恶意配方 key 可注入终端命令，`zsh` 下 `=` 开头 token 会触发路径展开；② 将 Actor 读改写拆为独立 `load()`/`save()` 并在中间 `await` 会引发并发丢写（TOCTOU）。 | ① env key 进入 shell 字符串前必须校验 `^[A-Za-z_][A-Za-z0-9_]*$`，非法 key 通过 `env 'K=V'` 安全转义，含 `=` 命令名及 `=` 开头参数必须单引号包裹；② 所有持久化 Store（如 `EngineConfigStore`、`GraphicsIndexStore`、`SnapshotIndexStore`）的读改写必须收敛在单次无挂起点的原子 `mutate` 事务中。 |
 | **L-016** | 符号链接解引用与子进程退出码门禁（Round 1 复盘） | ① `FileManager.copyItem` 对顶层符号链接目录仅复制链接本身而非目录内容，破坏克隆/复制隔离（L-005）；Homebrew Cask 在 `/opt/homebrew/bin/wine` 的符号链接会产出缺少 `lib/wine/` 的幽灵重复引擎；② 忽略 `exitCode != 0` 回读 `stderr` 会把 `dyld[1234]` 误判为 Wine 版本号。 | ① 复制/克隆前缀前必须对顶层源目录执行 `resolvingSymlinksInPath()` 并禁止祖先向子孙递归复制；引擎探测在缺少 `lib/wine` 时需沿 `bin/wine` 符号链接定位真实根并按规范路径去重；② 任何命令探测（如 `wine --version`）必须先校验 `exitCode == 0`，严禁将非零退出 `stderr` 当正常输出解析。 |
+| **L-017** | 流式子进程读取（Claude 接棒复盘） | `FileHandle.read(upToCount:)` 对管道会**阻塞到凑满指定字节数或 EOF**：16KB 缓冲下 Wine 日志要等进程退出才一次性出现，「实时日志」形同虚设，取消测试也因收不到首行而等满 30 秒。原有单测只断言最终内容，未断言**到达时机**，因此没发现。 | 流式读取管道必须用单次 POSIX `read(2)`（有字节即返回、`EINTR` 重试、0 为 EOF）或 `availableData`；所有流式接口的单测必须包含「子进程仍在运行时首行已到达」的时延断言（见 `testLiveCommandRunnerStreamsFirstLineBeforeChildExits`）。 |
+| **L-018** | 跨平台路径与信号差异（Claude 接棒复盘） | ① macOS 临时目录 `/var/folders/...` 是 `/private/var` 的符号链接，而 Foundation `URL.resolvingSymlinksInPath()` 会**主动去掉 `/private`**，与 `/bin/pwd`、`realpath` 返回的物理路径永远不等；② Linux 上 swift-corelibs-foundation 从 libdispatch 工作线程 `posix_spawn`，子进程继承屏蔽 SIGTERM 的信号掩码，`Process.terminate()` 无效。 | ① 需要与子进程/内核对比的物理路径一律用 `realpath(3)` 求值，不用 `resolvingSymlinksInPath()`；② 取消子进程在 Linux 上发送 SIGKILL（macOS 保持 SIGTERM）；只在单一平台成立的测试用 `#if os(...)` + `XCTSkipIf` 注明原因，严禁删除。 |
 
 ---
 
@@ -58,4 +60,10 @@
   7. **B-7（数据安全）**：`BottleStore` 复制/克隆符号链接前缀时 `copyItem` 仅复制链接本身而非目录内容。
   8. **B-8（二进制解析）**：`ShellLinkParser` 在 `VolumeIDAndLocalBasePath == 0` 时返回孤立 `commonPathSuffix` 阻断 `relativePath` 回退。
 - **修复与沉淀**：全部 8 项阻塞级缺陷 + 9 项细节优化已于 Round 1 返修补齐，补充针对性回归测试并沉淀为约束 **L-012 ~ L-016**，直接约束 Round 2 ~ Round 4 开发。
+
+### Claude 接棒（Antigravity Round 2–4 收尾，2026-11-20）
+- **背景**：Antigravity 在 `6b4c936` 一次性提交 Round 2–4 全部代码后额度耗尽，CI #3–#5 红灯，未留复盘。
+- **测试结果**：macOS CI #5 编译通过，148 个测试中 2 个失败；Linux（Swift 6.3.3）146/148。
+- **根因**：① `LiveCommandRunner` 用 `read(upToCount:)` 读管道导致日志不实时（真实产品 bug）；② 环境继承测试用 `resolvingSymlinksInPath()` 求期望路径，在 macOS 上被 `/private` 前缀差异坑；③ Linux 专属的 SIGTERM 掩码与 FoundationNetworking 下载任务 stub 崩溃。
+- **处理与沉淀**：改为 `read(2)` 并新增首行时延回归测试；测试改用 `realpath(3)`；Linux 取消改发 SIGKILL，HTTP 下载 stub 测试在 Linux 跳过并注明原因；CI 新增 `core-linux` 快速任务。沉淀为 **L-017、L-018**。
 
