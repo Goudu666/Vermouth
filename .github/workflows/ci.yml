@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  core-linux:
+    name: Core & CLI fast check (Linux, Swift 6.3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:6.3.3-noble
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build VermouthCore + VermouthCLI
+        run: swift build
+
+      - name: Run unit tests in parallel
+        run: swift test --parallel
+
+      - name: CLI smoke test
+        run: |
+          set -eu
+          BIN_PATH="$(swift build --show-bin-path)"
+          "$BIN_PATH/vermouth" --version
+          "$BIN_PATH/vermouth" recipes
+
+  build-and-test-macos:
+    name: Build, Test & Bundle (macos-15 arm64)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect toolchain and runner environment
+        run: |
+          swift --version
+          uname -m
+          sw_vers
+
+      - name: Build all SwiftPM targets
+        run: swift build
+
+      - name: Run unit tests in parallel
+        run: swift test --parallel
+
+      - name: Bundle Vermouth.app (debug) and verify codesign
+        run: |
+          chmod +x Scripts/bundle-app.sh
+          ./Scripts/bundle-app.sh --configuration debug --output dist
+
+      - name: Smoke-verify CLI and packaged Vermouth.app resources
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+
+          echo "==> Smoke testing SwiftPM vermouth CLI..."
+          "$BIN_PATH/vermouth" --version
+          "$BIN_PATH/vermouth" recipes
+
+          echo "==> Verifying Vermouth.app binaries and resource bundle layout..."
+          test -x "dist/Vermouth.app/Contents/MacOS/Vermouth"
+          test -x "dist/Vermouth.app/Contents/MacOS/vermouth-cli"
+          APP_INODE="$(stat -f %i dist/Vermouth.app/Contents/MacOS/Vermouth)"
+          CLI_INODE="$(stat -f %i dist/Vermouth.app/Contents/MacOS/vermouth-cli)"
+          echo "Inodes: Vermouth=$APP_INODE, vermouth-cli=$CLI_INODE"
+          test "$APP_INODE" != "$CLI_INODE"
+          otool -L dist/Vermouth.app/Contents/MacOS/Vermouth | grep -E "SwiftUI|AppKit"
+
+          test -d "dist/Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
+          test -f "dist/Vermouth.app/Contents/Resources/AppIcon.icns"
+          if [[ -n "$(find dist/Vermouth.app -maxdepth 1 -name '*.bundle')" ]]; then
+            echo "error: resource bundle must not exist at Vermouth.app root" >&2
+            exit 1
+          fi
+
+          echo "==> Smoke testing bundled companion CLI inside Vermouth.app..."
+          "dist/Vermouth.app/Contents/MacOS/vermouth-cli" --version
+          BUNDLED_RECIPES_OUT="$("dist/Vermouth.app/Contents/MacOS/vermouth-cli" recipes)"
+          echo "$BUNDLED_RECIPES_OUT"
+          echo "$BUNDLED_RECIPES_OUT" | grep -F "Built-in recipes directory:" | grep -F "Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
+
+          echo "==> End-to-end CLI workflow smoke test in isolated VERMOUTH_HOME..."
+          SMOKE_HOME="$(mktemp -d)"
+          export VERMOUTH_HOME="$SMOKE_HOME"
+          CLI="dist/Vermouth.app/Contents/MacOS/vermouth-cli"
+          "$CLI" preflight --json | grep -F '"architecture"'
+          "$CLI" bottle create "SmokeBottle" --win win10 --graphics wined3d --sync msync
+          "$CLI" bottle inspect "SmokeBottle" --json | grep -F '"SmokeBottle"'
+          "$CLI" recipe apply "SmokeBottle" gtasa-pc-1.0
+          mkdir -p "$SMOKE_HOME/savegame"
+          echo "level=10" > "$SMOKE_HOME/savegame/slot1.sav"
+          SNAP_JSON="$("$CLI" snapshot create "SmokeBottle" "$SMOKE_HOME/savegame" --label "BeforeMod" --json)"
+          SNAP_ID="$(echo "$SNAP_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+          echo "corrupted" > "$SMOKE_HOME/savegame/slot1.sav"
+          "$CLI" snapshot rollback "SmokeBottle" "$SNAP_ID"
+          grep -Fx "level=10" "$SMOKE_HOME/savegame/slot1.sav"
+          echo '0024:err:module:import_dll Library vcruntime140.dll (which is needed by L"C:\\game.exe") not found' > "$SMOKE_HOME/sample.log"
+          "$CLI" diagnose "$SMOKE_HOME/sample.log" --json | grep -F "vcrun2022"
+          rm -rf "$SMOKE_HOME"
