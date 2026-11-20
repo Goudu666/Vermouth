@@ -130,7 +130,7 @@ struct EngineSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        let brewCmd = "brew install --cask --no-quarantine gcenx/wine/wine-stable"
+                        let brewCmd = EngineManager.recommendedWineInstallCommand
                         HStack {
                             Text(brewCmd)
                                 .font(.caption.monospaced())

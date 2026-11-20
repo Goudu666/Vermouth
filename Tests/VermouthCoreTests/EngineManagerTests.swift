@@ -569,6 +569,10 @@ final class EngineManagerTests: XCTestCase {
             enginesItem.remediationCommand?.contains("wine-stable") == true,
             "Remediation command should recommend wine-stable, got \(String(describing: enginesItem.remediationCommand))"
         )
+        // L-019：新版 Homebrew 已移除 --no-quarantine，带上它整条命令会直接报错
+        XCTAssertEqual(enginesItem.remediationCommand, EngineManager.recommendedWineInstallCommand)
+        XCTAssertFalse(enginesItem.remediationCommand?.contains("--no-quarantine") ?? true)
+        XCTAssertTrue(enginesItem.remediationCommand?.contains("xattr -dr com.apple.quarantine '/Applications/Wine Stable.app'") ?? false)
         XCTAssertTrue(
             enginesItem.detail.contains("Wine Stable"),
             "Preflight detail should mention Wine Stable"

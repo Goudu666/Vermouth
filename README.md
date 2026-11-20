@@ -85,8 +85,10 @@ flowchart LR
   1. Rosetta 2：`softwareupdate --install-rosetta --agree-to-license`
   2. 开源 Wine 引擎（推荐通过 Homebrew 安装）：
      ```bash
-     brew install --cask --no-quarantine gcenx/wine/wine-stable
+     brew install --cask gcenx/wine/wine-stable
+     xattr -dr com.apple.quarantine "/Applications/Wine Stable.app"
      ```
+     *新版 Homebrew 已移除 `--no-quarantine` 参数，所以改为安装后再用 `xattr` 去掉隔离属性；不去掉的话 Wine 启动时会被 Gatekeeper 拦下。*
      *（同时兼容本机已有的 `Wine Staging.app`、`Wine Crossover.app` 或任意自定义 Wine 目录）*
 
 ---

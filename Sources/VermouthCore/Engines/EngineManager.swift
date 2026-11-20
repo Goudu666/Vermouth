@@ -99,6 +99,11 @@ private actor EngineConfigStore {
 
 /// Wine 引擎发现、确定性只读能力探测、自定义登记与环境预检核心实现（遵循 L-004 / L-005 / L-006）。
 public final class EngineManager: EngineManaging, Sendable {
+    /// 推荐的 Wine 引擎安装命令。新版 Homebrew 已移除 `--no-quarantine`（L-019），
+    /// 所以先正常安装，再对 cask 装出的 `Wine Stable.app` 去掉隔离属性。
+    public static let recommendedWineInstallCommand =
+        "brew install --cask gcenx/wine/wine-stable && xattr -dr com.apple.quarantine '/Applications/Wine Stable.app'"
+
     private static let binaryScanChunkSize = 65_536
     private static let binaryScanMaxBytes = 32 * 1024 * 1024
 
@@ -356,7 +361,7 @@ public final class EngineManager: EngineManaging, Sendable {
                     title: "Wine 引擎",
                     status: .fail,
                     detail: "未检测到可用的 Wine 引擎。推荐通过 Homebrew 安装 Wine Stable (WoW64)，也支持登记已安装的 Wine Crossover.app / CrossOver 或自定义 Wine 目录。",
-                    remediationCommand: "brew install --cask --no-quarantine gcenx/wine/wine-stable"
+                    remediationCommand: Self.recommendedWineInstallCommand
                 )
             )
         } else {
