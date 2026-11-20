@@ -1,0 +1,104 @@
+name: Package
+
+# 产出可下载的 Vermouth.app（release 构建，Apple Silicon，ad-hoc 签名）：
+# - 向 main 开的 PR：上传为 workflow artifact（在 Actions 运行页底部下载，保留 14 天）
+# - 推送 main：滚动更新预发布版 `nightly`
+# - 推送 v* 标签：创建正式 Release
+# 资产文件名固定为 Vermouth-macos-arm64.zip，便于写死下载链接。
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ASSET_NAME: Vermouth-macos-arm64.zip
+
+jobs:
+  package-macos:
+    name: Package Vermouth.app (release, macos-15 arm64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Bundle Vermouth.app (release)
+        run: |
+          chmod +x Scripts/bundle-app.sh
+          ./Scripts/bundle-app.sh --configuration release --output dist
+
+      - name: Verify bundle
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 dist/Vermouth.app
+          test -f dist/Vermouth.app/Contents/Resources/AppIcon.icns
+          dist/Vermouth.app/Contents/MacOS/vermouth-cli --version
+
+      - name: Zip with ditto (keeps permissions and signature)
+        id: zip
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          ditto -c -k --sequesterRsrc --keepParent dist/Vermouth.app "dist/$ASSET_NAME"
+          (cd dist && shasum -a 256 "$ASSET_NAME" > "$ASSET_NAME.sha256")
+          cat "dist/$ASSET_NAME.sha256"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      # artifact 本身会再套一层 zip；里面那层由 ditto 打包，才能保留可执行权限与签名。
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vermouth-macos-arm64-${{ steps.zip.outputs.short_sha }}
+          path: |
+            dist/${{ env.ASSET_NAME }}
+            dist/${{ env.ASSET_NAME }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish rolling nightly pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT_SHA: ${{ steps.zip.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          main 分支最新构建（\`${SHORT_SHA}\`），每次合并到 main 自动更新。未经 Apple 公证，首次打开请看 README「下载安装」。
+
+          SHA-256：\`$(cut -d' ' -f1 "dist/$ASSET_NAME.sha256")\`
+          EOF
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly "dist/$ASSET_NAME" "dist/$ASSET_NAME.sha256" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly (${SHORT_SHA})" --notes-file notes.md
+
+      - name: Publish tagged release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "dist/$ASSET_NAME" "dist/$ASSET_NAME.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "dist/$ASSET_NAME" "dist/$ASSET_NAME.sha256" \
+              --title "Vermouth ${GITHUB_REF_NAME}" --generate-notes
+          fi

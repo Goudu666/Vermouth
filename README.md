@@ -14,6 +14,7 @@
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple">
   <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-7A1733">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-E39B3A">
+  <a href="https://github.com/Goudu666/Vermouth/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Goudu666/Vermouth/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 > **当前版本**：`v0.1.0`（MVP 核心转译闭环：`VermouthCore` 核心库、`vermouth` 命令行工具与原生 SwiftUI `Vermouth.app`）。
@@ -49,6 +50,30 @@ flowchart LR
 - **运行库可视化安装器**：勾选 VC++、D3DX9、D3DCompiler、.NET、字体等常用组件，一键用容器同源环境调用 `winetricks`；诊断出缺失 DLL 时可直接「一键安装」。
 - **日志分级着色**：自动识别 Wine `err` / `warn` / `fixme` / `trace` 级别与调试通道，默认隐藏刷屏噪音，错误行高亮。
 - **高级 DLL 覆写与原子快照**：可视化管理 `WINEDLLOVERRIDES`（内置 `dinput8` / `vorbisfile` / `winhttp` / `version` 等 Mod 钩子预设，自动检测 DXMT `builtin` 覆写冲突），并提供带 SHA-256 完整性校验的存档/配置目录时间戳快照与安全原子回滚。
+
+---
+
+## 下载安装
+
+不想自己编译的话，直接下载 CI 打好的 `Vermouth.app`（Apple Silicon，release 构建）：
+
+| 版本 | 下载 | 说明 |
+|---|---|---|
+| 正式版 | [最新 Release](https://github.com/Goudu666/Vermouth/releases/latest) | 推送 `v*` 标签时发布 |
+| 每日构建 | [`nightly` 预发布](https://github.com/Goudu666/Vermouth/releases/tag/nightly) · [直接下载 zip](https://github.com/Goudu666/Vermouth/releases/download/nightly/Vermouth-macos-arm64.zip) | `main` 每次更新自动重建 |
+| PR 预览 | Actions 里 [Package 工作流](https://github.com/Goudu666/Vermouth/actions/workflows/package.yml) 对应运行页底部的 **Artifacts** | 需登录 GitHub；下载后要**解压两次**（外层是 GitHub 打的包），保留 14 天 |
+
+解压得到 `Vermouth.app`，拖进「应用程序」。
+
+**首次打开（未经 Apple 公证）**：Vermouth 只做了 ad-hoc 签名，没有付费开发者证书，macOS 会拦截。任选一种方式放行：
+
+- **图形界面**：先双击一次（会被拦下）→ 打开「系统设置 → 隐私与安全性」，在底部点「仍要打开」。macOS 14 也可以在 Finder 里**右键 → 打开**。
+- **终端**（一条命令，最省事）：
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Vermouth.app
+  ```
+
+想核对文件完整性：Release 里附带 `Vermouth-macos-arm64.zip.sha256`，用 `shasum -a 256 -c Vermouth-macos-arm64.zip.sha256` 校验。
 
 ---
 

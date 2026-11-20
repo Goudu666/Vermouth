@@ -27,7 +27,7 @@
 - ✅ 运行库可视化安装器（2026-11-20 提前完成；后续可加逐项进度解析）。
 - 一键导出独立 `.app` 快捷方式（放进 Dock / Launchpad 双击直开）。
 - 配方导入导出 UI 完整化（核心的脱敏导出已实现）。
-- Steam 容器模板；GitHub Actions 自动构建 DMG 发布。
+- Steam 容器模板；~~GitHub Actions 自动构建发布~~ ✅ `package.yml` 已产出 zip（PR artifact / nightly / 标签 Release），DMG 与 Apple 公证待做。
 
 ## M4 · v0.3：进阶扩展（PRD §4.3）
 

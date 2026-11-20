@@ -21,6 +21,7 @@ updated_by: claude
 - v0.1 代码全部落地且 **CI 全绿**：实时日志阻塞（L-017）与跨平台测试问题（L-018）已修，Linux 169/169。
 - 已完成 M2 第一批界面：App 图标与品牌色板、`.exe` 真实图标卡片墙（Clean-Room `PEIconExtractor` + 磁盘缓存）、转译链路可视化、彩色日志与级别筛选、三步引导。
 - 已提前完成 M3 运行库安装器（winetricks 卡片 + 诊断卡片一键安装），README 门面已更新。
+- 新增 `.github/workflows/package.yml`：PR 上传 `Vermouth-macos-arm64.zip` artifact，合并 main 后滚动发布 `nightly` 预发布，`v*` 标签发正式 Release；README 有「下载安装」与 Gatekeeper 放行说明。
 - **所有 UI 只在 macOS CI 上编译通过，还没有人在真机上看过观感。**
 
 ## 2. 下一步（按优先级）
