@@ -11,6 +11,30 @@ struct ConsoleLogView: View {
     @State private var autoScroll: Bool = true
     @State private var isShowingCustomDebugPopover: Bool = false
     @State private var customDebugDraft: String = ""
+    @State private var levelFilter: LevelFilter = .hideNoise
+
+    /// 按 Wine 日志级别筛选（`fixme` / `trace` 在多数游戏里会刷屏，默认隐藏）。
+    private enum LevelFilter: String, CaseIterable, Identifiable {
+        case all = "全部级别"
+        case hideNoise = "隐藏 fixme/trace"
+        case warningsAndErrors = "仅警告与错误"
+        case errorsOnly = "仅错误"
+
+        var id: Self { self }
+
+        func accepts(_ level: WineLogLevel) -> Bool {
+            switch self {
+            case .all: true
+            case .hideNoise: level != .fixme && level != .trace
+            case .warningsAndErrors: level == .error || level == .warning
+            case .errorsOnly: level == .error
+            }
+        }
+    }
+
+    private func level(of line: LogLine) -> WineLogLevel {
+        line.stream == .system ? .info : WineLogClassifier.classify(line.text).level
+    }
 
     private enum StreamFilter: String, CaseIterable, Identifiable {
         case all = "全部"
@@ -37,6 +61,9 @@ struct ConsoleLogView: View {
                 if line.stream != .stdout { return false }
             case .system:
                 if line.stream != .system { return false }
+            }
+            if line.stream != .system && !levelFilter.accepts(level(of: line)) {
+                return false
             }
             if query.isEmpty {
                 return true
@@ -176,6 +203,17 @@ struct ConsoleLogView: View {
                 .frame(width: 210)
                 .labelsHidden()
 
+                Picker("级别", selection: $levelFilter) {
+                    ForEach(LevelFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .help("按 Wine 日志级别筛选")
+
+                levelCounters
+
                 TextField("过滤日志关键字…", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 140, maxWidth: 220)
@@ -285,16 +323,47 @@ struct ConsoleLogView: View {
         }
     }
 
+    @ViewBuilder
+    private var levelCounters: some View {
+        let counts = viewModel.liveLogLines.reduce(into: (errors: 0, warnings: 0)) { partial, line in
+            guard line.stream != .system else { return }
+            switch WineLogClassifier.classify(line.text).level {
+            case .error: partial.errors += 1
+            case .warning: partial.warnings += 1
+            default: break
+            }
+        }
+        if counts.errors > 0 {
+            PillBadge(text: "\(counts.errors)", systemImage: "xmark.octagon.fill", tint: .red)
+                .help("错误行数")
+        }
+        if counts.warnings > 0 {
+            PillBadge(text: "\(counts.warnings)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                .help("警告行数")
+        }
+    }
+
     private func logLineRow(_ line: LogLine) -> some View {
+        let classification = line.stream == .system
+            ? WineLogClassification(level: .info, channel: nil, message: line.text)
+            : WineLogClassifier.classify(line.text)
+        let level = classification.level
+
         let (badgeLabel, badgeTint): (String, Color) = {
             switch line.stream {
-            case .stdout:
-                return ("OUT", .secondary)
-            case .stderr:
-                return ("ERR", .orange)
             case .system:
                 return ("SYS", .blue)
+            case .stdout, .stderr:
+                if level == .info {
+                    return (line.stream == .stderr ? "ERR" : "OUT", .secondary)
+                }
+                return (level.badge, level.tint)
             }
+        }()
+
+        let textColor: Color = {
+            if line.stream == .system { return Color.accentColor }
+            return level == .info ? .primary : level.tint
         }()
 
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -305,14 +374,27 @@ struct ConsoleLogView: View {
             Text(badgeLabel)
                 .font(.caption2.monospaced().weight(.bold))
                 .foregroundStyle(badgeTint)
-                .frame(width: 28, alignment: .leading)
+                .frame(width: 40, alignment: .leading)
 
-            Text(line.text)
+            if let channel = classification.channel {
+                Text(channel)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.12), in: .rect(cornerRadius: 4))
+            }
+
+            Text(classification.channel == nil ? line.text : classification.message)
                 .font(.caption.monospaced())
-                .foregroundStyle(line.stream == .system ? Color.accentColor : .primary)
+                .fontWeight(level == .error ? .semibold : .regular)
+                .foregroundStyle(textColor)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.vertical, level == .error ? 2 : 0)
+        .padding(.horizontal, level == .error ? 4 : 0)
+        .background(level == .error ? Color.red.opacity(0.08) : Color.clear, in: .rect(cornerRadius: 4))
     }
 
     private func setDebugChannels(_ channels: String) {

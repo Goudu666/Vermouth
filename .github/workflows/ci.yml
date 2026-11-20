@@ -85,6 +85,7 @@ jobs:
           otool -L dist/Vermouth.app/Contents/MacOS/Vermouth | grep -E "SwiftUI|AppKit"
 
           test -d "dist/Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
+          test -f "dist/Vermouth.app/Contents/Resources/AppIcon.icns"
           if [[ -n "$(find dist/Vermouth.app -maxdepth 1 -name '*.bundle')" ]]; then
             echo "error: resource bundle must not exist at Vermouth.app root" >&2
             exit 1

@@ -264,7 +264,7 @@ struct BottleDetailView: View {
     private var pinnedProgramsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("已固定启动卡片 (\(bottle.apps.count))", systemImage: "pin.fill")
+                Label("程序库 (\(bottle.apps.count))", systemImage: "square.grid.2x2.fill")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -291,159 +291,151 @@ struct BottleDetailView: View {
                         .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
                 )
             } else {
-                VStack(spacing: 10) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 168, maximum: 220), spacing: 14)],
+                    alignment: .leading,
+                    spacing: 14
+                ) {
                     ForEach(bottle.apps) { app in
-                        pinnedAppCard(app)
+                        pinnedAppTile(app)
                     }
+                }
+
+                if let inspectedApp = bottle.apps.first(where: { $0.id == inspectedAppID }) {
+                    commandInspectorPanel(for: inspectedApp)
                 }
             }
         }
     }
 
-    private func pinnedAppCard(_ app: AppEntry) -> some View {
-        let isInspectingThisApp = inspectedAppID == app.id
+    private func pinnedAppTile(_ app: AppEntry) -> some View {
+        var badges: [(text: String, tint: Color)] = []
+        if !app.arguments.isEmpty {
+            badges.append((text: "参数 \(app.arguments.count)", tint: Color.indigo))
+        }
+        if !app.dllOverrides.isEmpty {
+            badges.append((text: "DLL \(app.dllOverrides.count)", tint: Color.orange))
+        }
+        if !app.snapshotTargets.isEmpty {
+            badges.append((text: "快照", tint: Color.teal))
+        }
+        let subtitle: String = {
+            if let lastLaunched = app.lastLaunchedAt {
+                return "上次启动 \(VermouthFormatters.formatDateTime(lastLaunched))"
+            }
+            return URL(fileURLWithPath: app.executablePath).lastPathComponent
+        }()
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "app.badge.checkmark.fill")
-                    .font(.title2)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 38, height: 38)
-                    .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 8))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(app.name)
-                            .font(.subheadline.weight(.semibold))
-                        if !app.arguments.isEmpty {
-                            PillBadge(text: "参数 \(app.arguments.count)", tint: .indigo)
-                        }
-                        if !app.dllOverrides.isEmpty {
-                            PillBadge(text: "DLL 覆写 \(app.dllOverrides.count)", tint: .orange)
-                        }
-                        if !app.snapshotTargets.isEmpty {
-                            PillBadge(text: "快照目录 \(app.snapshotTargets.count)", tint: .teal)
-                        }
-                    }
-
-                    Text(app.executablePath)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    if let lastLaunched = app.lastLaunchedAt {
-                        Text("上次启动：\(VermouthFormatters.formatDateTime(lastLaunched))")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+        return ProgramTile(
+            name: app.name,
+            subtitle: subtitle,
+            hostPath: ProgramIconCache.resolveHostPath(app.executablePath, prefixPath: bottle.prefixPath),
+            cache: viewModel.iconCache,
+            badges: badges,
+            isSelected: inspectedAppID == app.id,
+            isLaunchDisabled: viewModel.isRunningProcess,
+            onLaunch: {
+                Task {
+                    await viewModel.launchApp(app, in: bottle)
                 }
+            },
+            menu: {
+                pinnedAppMenu(app)
+            }
+        )
+    }
 
+    @ViewBuilder
+    private func pinnedAppMenu(_ app: AppEntry) -> some View {
+        Button {
+            toggleCommandPreview(for: app)
+        } label: {
+            Label(inspectedAppID == app.id ? "收起命令预览" : "查看完整启动命令", systemImage: "terminal")
+        }
+
+        Button {
+            editingAppEntry = app
+        } label: {
+            Label("编辑参数与覆写…", systemImage: "slider.horizontal.3")
+        }
+
+        Button {
+            if let firstTarget = app.snapshotTargets.first {
+                _ = viewModel.createSnapshot(
+                    for: firstTarget,
+                    note: "从「\(app.name)」卡片一键创建快照",
+                    in: bottle
+                )
+            } else {
+                viewModel.isShowingSnapshotSheet = true
+            }
+        } label: {
+            Label(app.snapshotTargets.isEmpty ? "配置快照…" : "一键快照", systemImage: "camera.metering.matrix")
+        }
+
+        Button {
+            revealExecutable(app.executablePath)
+        } label: {
+            Label("在 Finder 中显示可执行文件", systemImage: "folder")
+        }
+
+        Button {
+            Task {
+                await viewModel.launchApp(app, in: bottle, debugChannelsOverride: "+loaddll")
+            }
+        } label: {
+            Label("附带 +loaddll 调试通道启动", systemImage: "ant")
+        }
+        .disabled(viewModel.isRunningProcess)
+
+        Divider()
+
+        Button(role: .destructive) {
+            viewModel.removeAppEntry(app, in: bottle)
+        } label: {
+            Label("取消固定并移除卡片", systemImage: "trash")
+        }
+    }
+
+    private func commandInspectorPanel(for app: AppEntry) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("「\(app.name)」的完整启动命令", systemImage: "terminal")
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
-
-                HStack(spacing: 6) {
-                    Button {
-                        toggleCommandPreview(for: app)
-                    } label: {
-                        Label("命令预览", systemImage: "terminal")
-                    }
-                    .controlSize(.small)
-
-                    Button {
-                        if let firstTarget = app.snapshotTargets.first {
-                            _ = viewModel.createSnapshot(
-                                for: firstTarget,
-                                note: "从「\(app.name)」卡片一键创建快照",
-                                in: bottle
-                            )
-                        } else {
-                            viewModel.isShowingSnapshotSheet = true
-                        }
-                    } label: {
-                        Label(
-                            app.snapshotTargets.isEmpty ? "配置快照" : "一键快照",
-                            systemImage: "camera.metering.matrix"
-                        )
-                    }
-                    .controlSize(.small)
-
-                    Button {
-                        editingAppEntry = app
-                    } label: {
-                        Label("编辑", systemImage: "slider.horizontal.3")
-                    }
-                    .controlSize(.small)
-
-                    Menu {
-                        Button {
-                            revealExecutable(app.executablePath)
-                        } label: {
-                            Label("在 Finder 中显示可执行文件", systemImage: "folder")
-                        }
-
-                        Button {
-                            Task {
-                                await viewModel.launchApp(
-                                    app,
-                                    in: bottle,
-                                    debugChannelsOverride: "+loaddll"
-                                )
-                            }
-                        } label: {
-                            Label("附带 +loaddll 调试通道启动", systemImage: "ant")
-                        }
-
-                        Divider()
-
-                        Button(role: .destructive) {
-                            viewModel.removeAppEntry(app, in: bottle)
-                        } label: {
-                            Label("取消固定并移除卡片", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 24)
-
-                    Button {
-                        Task {
-                            await viewModel.launchApp(app, in: bottle)
-                        }
-                    } label: {
-                        Label("启动", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.isRunningProcess)
+                Button {
+                    toggleCommandPreview(for: app)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                .help("收起")
             }
 
-            if isInspectingThisApp {
-                Divider()
-                if isLoadingAppPlan {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("正在生成精确启动命令…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if let plan = inspectedAppPlan {
-                    LaunchPlanInspectorView(plan: plan) { cmd in
-                        viewModel.copyToClipboard(cmd, label: "启动命令")
-                    }
-                } else {
-                    Text("未能构建启动预览，请先确认已配置可用的 Wine 引擎。")
+            if isLoadingAppPlan {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在生成精确启动命令…")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                 }
+            } else if let plan = inspectedAppPlan {
+                LaunchPlanInspectorView(plan: plan) { cmd in
+                    viewModel.copyToClipboard(cmd, label: "启动命令")
+                }
+            } else {
+                Text("未能构建启动预览，请先确认已配置可用的 Wine 引擎。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 10))
+        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 12))
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(VermouthTheme.amber.opacity(0.5), lineWidth: 1)
         )
     }
 
@@ -505,9 +497,12 @@ struct BottleDetailView: View {
                         let alreadyPinned = viewModel.isDiscoveredExecutablePinned(exec, in: bottle)
 
                         HStack(spacing: 10) {
-                            Image(systemName: exec.source.systemImage)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 22)
+                            ProgramIconView(
+                                hostPath: exec.executablePath,
+                                name: exec.name,
+                                cache: viewModel.iconCache,
+                                size: 30
+                            )
 
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {

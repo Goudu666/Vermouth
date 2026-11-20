@@ -242,8 +242,8 @@ struct MainWorkspaceView: View {
     private func sidebarBottleRow(_ bottle: Bottle) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Image(systemName: bottle.isExternalPrefix ? "externaldrive.badge.icloud" : "shippingbox.fill")
-                    .foregroundStyle(Color.accentColor)
+                Image(systemName: bottle.isExternalPrefix ? "externaldrive.badge.icloud" : "wineglass.fill")
+                    .foregroundStyle(bottle.isExternalPrefix ? Color.orange : VermouthTheme.amber)
                 Text(bottle.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -447,6 +447,10 @@ struct MainWorkspaceView: View {
     private func workspaceSectionHeader(for bottle: Bottle) -> some View {
         VStack(spacing: 10) {
             HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "wineglass.fill")
+                    .font(.title3)
+                    .foregroundStyle(VermouthTheme.liquidGradient)
+
                 Text(bottle.name)
                     .font(.title3.weight(.bold))
 
@@ -488,6 +492,15 @@ struct MainWorkspaceView: View {
                 }
             }
 
+            TranslationPipelineView(
+                stages: TranslationPipeline.stages(
+                    backend: bottle.config.graphicsBackend,
+                    engine: viewModel.resolvedEngine(for: bottle),
+                    rosettaReady: viewModel.preflightReport?.rosetta2Ready
+                )
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
             Picker("工作区", selection: $viewModel.selectedTab) {
                 ForEach(WorkspaceSection.allCases) { section in
                     Label(section.title, systemImage: section.systemImage)
@@ -503,35 +516,107 @@ struct MainWorkspaceView: View {
     }
 
     private var emptyWorkspacePlaceholder: some View {
-        ContentUnavailableView {
-            Label("欢迎使用 Vermouth", systemImage: "wineglass")
-        } description: {
-            Text(
-                "面向 Apple Silicon Mac 的开源原生 Windows 应用与游戏转译启动器。\n创建一个独立容器或导入已有 WINEPREFIX，即可配置 DXMT / DXVK-macOS 并启动 Windows 程序。"
+        let hasEngine = viewModel.activeDefaultEngine != nil
+        let rosettaReady = viewModel.preflightReport?.rosetta2Ready == true
+        return VStack(spacing: 22) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .frame(width: 112, height: 112)
+                .shadow(color: VermouthTheme.burgundy.opacity(0.35), radius: 18, y: 8)
+
+            VStack(spacing: 8) {
+                Text("欢迎使用 Vermouth")
+                    .font(.largeTitle.weight(.bold))
+                Text("把 Windows 游戏和软件，倒进你的 Apple Silicon Mac。")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+
+            TranslationPipelineView(
+                stages: TranslationPipeline.stages(
+                    backend: .dxmt,
+                    engine: viewModel.activeDefaultEngine,
+                    rosettaReady: viewModel.preflightReport?.rosetta2Ready
+                )
             )
-        } actions: {
-            HStack(spacing: 12) {
-                Button {
-                    viewModel.openCreateBottleSheet(mode: .createNew)
-                } label: {
-                    Label("新建容器…", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
+            .frame(maxWidth: 640)
 
-                Button {
-                    viewModel.openCreateBottleSheet(mode: .importExisting)
-                } label: {
-                    Label("导入已有前缀…", systemImage: "folder.badge.plus")
-                }
-
-                Button {
+            VStack(alignment: .leading, spacing: 10) {
+                onboardingStep(
+                    index: 1,
+                    title: "检查转译环境",
+                    detail: rosettaReady ? "Rosetta 2 已就绪" : "确认 Rosetta 2 与 Homebrew",
+                    isDone: rosettaReady
+                ) {
                     viewModel.isShowingPreflightSheet = true
-                } label: {
-                    Label("环境预检…", systemImage: "checklist")
+                }
+                onboardingStep(
+                    index: 2,
+                    title: "选择 Wine 引擎",
+                    detail: viewModel.activeDefaultEngine?.name ?? "推荐 brew install --cask gcenx/wine/wine-stable",
+                    isDone: hasEngine
+                ) {
+                    viewModel.openEngineSettings(tab: .engines)
+                }
+                onboardingStep(
+                    index: 3,
+                    title: "新建第一个容器",
+                    detail: "或导入已有的 WINEPREFIX",
+                    isDone: !viewModel.bottles.isEmpty
+                ) {
+                    viewModel.openCreateBottleSheet(mode: .createNew)
                 }
             }
+            .frame(maxWidth: 460)
         }
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func onboardingStep(
+        index: Int,
+        title: String,
+        detail: String,
+        isDone: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(isDone ? AnyShapeStyle(Color.green) : AnyShapeStyle(VermouthTheme.brandGradient))
+                        .frame(width: 30, height: 30)
+                    if isDone {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                    } else {
+                        Text("\(index)")
+                            .font(.callout.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

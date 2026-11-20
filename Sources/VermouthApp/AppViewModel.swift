@@ -111,6 +111,8 @@ final class AppViewModel {
     let crashDiagnoser: CrashDiagnoser
     let snapshotManager: SnapshotManager
     let recipeEngine: RecipeEngine
+    /// 程序图标缓存（从 `.exe` 资源段提取，按路径 + 修改时间落盘）。
+    let iconCache: ProgramIconCache
 
     // MARK: - Modal & Sheet Presentation State
 
@@ -195,6 +197,7 @@ final class AppViewModel {
         self.crashDiagnoser = CrashDiagnoser()
         self.snapshotManager = SnapshotManager(paths: paths, commandRunner: commandRunner)
         self.recipeEngine = RecipeEngine(paths: paths)
+        self.iconCache = ProgramIconCache(paths: paths)
     }
 
     // MARK: - Computed Properties & Lookups
