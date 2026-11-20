@@ -1,0 +1,32 @@
+name: Agent Docs Sync
+
+# 确保 CLAUDE.md / GEMINI.md 始终由 AGENTS.md + docs/agents/*.md 生成，两个 Agent 读到的规则一致。
+on:
+  push:
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "GEMINI.md"
+      - "docs/agents/**"
+      - "Scripts/sync-agent-docs.sh"
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "GEMINI.md"
+      - "docs/agents/**"
+      - "Scripts/sync-agent-docs.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-sync:
+    name: CLAUDE.md / GEMINI.md in sync with AGENTS.md
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify generated agent docs are up to date
+        run: ./Scripts/sync-agent-docs.sh --check
