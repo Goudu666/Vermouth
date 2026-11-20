@@ -225,3 +225,49 @@ final class LaunchOutcomeTests: XCTestCase {
         )
     }
 }
+
+final class InstalledProgramAdopterTests: XCTestCase {
+    private func exec(_ path: String, _ source: DiscoveredExecutable.DiscoverySource, name: String? = nil) -> DiscoveredExecutable {
+        DiscoveredExecutable(
+            name: name ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
+            executablePath: path,
+            source: source
+        )
+    }
+
+    func testShortcutsWinOverLooseExecutables() {
+        let before = [exec("/p/drive_c/windows/notepad.exe", .programFilesScan)]
+        let after = before + [
+            exec("/p/drive_c/Program Files/Game/Game.exe", .startMenuShortcut, name: "My Game"),
+            exec("/p/drive_c/Program Files/Game/Tool.exe", .programFilesScan),
+            exec("/p/drive_c/Program Files/Game/unins000.exe", .programFilesScan),
+        ]
+        XCTAssertEqual(InstalledProgramAdopter.programsToAdopt(before: before, after: after).map(\.name), ["My Game"])
+    }
+
+    func testFewLooseExecutablesAreAdoptedAndHelpersSkipped() {
+        let after = [
+            exec("/p/drive_c/Program Files/App/App.exe", .programFilesScan),
+            exec("/p/drive_c/Program Files/App/Uninstall.exe", .programFilesScan),
+        ]
+        XCTAssertEqual(InstalledProgramAdopter.programsToAdopt(before: [], after: after).map(\.name), ["App"])
+    }
+
+    func testTooManyLooseExecutablesAreLeftForTheUser() {
+        let after = (1...5).map { exec("/p/drive_c/Program Files/Suite/tool\($0).exe", .programFilesScan) }
+        XCTAssertTrue(InstalledProgramAdopter.programsToAdopt(before: [], after: after).isEmpty)
+    }
+
+    func testNothingNewMeansNothingAdopted() {
+        let same = [exec("/p/drive_c/Program Files/Game/Game.exe", .desktopShortcut)]
+        XCTAssertTrue(InstalledProgramAdopter.programsToAdopt(before: same, after: same).isEmpty)
+    }
+
+    func testDuplicateShortcutsCollapse() {
+        let after = [
+            exec("/p/drive_c/Program Files/Game/Game.exe", .startMenuShortcut, name: "Game"),
+            exec("/P/drive_c/Program Files/Game/GAME.exe", .desktopShortcut, name: "Game"),
+        ]
+        XCTAssertEqual(InstalledProgramAdopter.programsToAdopt(before: [], after: after).count, 1)
+    }
+}

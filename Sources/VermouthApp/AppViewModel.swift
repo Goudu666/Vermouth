@@ -161,6 +161,14 @@ final class AppViewModel {
     var statusBannerMessage: String?
     var errorAlertMessage: String?
 
+    // MARK: - Simple Library Mode State（普通模式：程序库 + 一键启动）
+
+    var isShowingSetupSheet: Bool = false
+    var isShowingInstalledProgramsSheet: Bool = false
+    var launchActivity: LaunchActivity = .idle
+    var lastLaunchReport: LaunchReport?
+    var pendingProgramFile: PendingProgramFile?
+
     // MARK: - Internal Coordination State
 
     private var hasBootstrapped: Bool = false
@@ -168,6 +176,11 @@ final class AppViewModel {
     private var previewRefreshTask: Task<Void, Never>?
     private var bannerDismissTask: Task<Void, Never>?
     private var seenDiagnosticIDs: Set<String> = []
+    /// 每次启动换一个令牌，旧会话收尾时不会把新会话的状态清掉
+    private var currentSessionToken: UUID?
+    private var userRequestedStop: Bool = false
+    /// 本次会话出现过的诊断（不受跨会话去重影响，用于判断运行结果）
+    private var sessionFindings: [String: DiagnosticFinding] = [:]
 
     init(paths: VermouthPaths = VermouthPaths()) {
         let commandRunner = LiveCommandRunner()
@@ -283,7 +296,8 @@ final class AppViewModel {
         reloadInstalledGraphicsPackages()
         reloadRecipesFromDisk()
 
-        await refreshPreflight(autoPresentIfNotReady: true)
+        // 普通模式用程序库顶部的「准备运行环境」卡片代替自动弹出技术预检
+        await refreshPreflight(autoPresentIfNotReady: isAdvancedMode)
 
         if let bottle = selectedBottle {
             reloadSnapshots(for: bottle.id)
@@ -510,7 +524,9 @@ final class AppViewModel {
         graphicsBackend: GraphicsBackend,
         syncMode: SyncMode,
         enableChinese: Bool,
-        initialRecipeID: String?
+        initialRecipeID: String?,
+        announce: Bool = true,
+        initializingMessage: String = "正在初始化容器与注册表…"
     ) async -> Bool {
         let detectedFont = RegistryPatcher.detectAvailableCJKFont()
         let initialConfig = BottleConfig(
@@ -561,7 +577,7 @@ final class AppViewModel {
 
                 if let engine = resolvedEngine(for: created) {
                     let bottleToInit = created
-                    await performBusyOperation("正在初始化容器与注册表…") {
+                    await performBusyOperation(initializingMessage) {
                         try? await self.wineRunner.ensurePrefixInitialized(bottle: bottleToInit, engine: engine)
                         try? await self.wineRunner.applyBottleRegistrySettings(bottle: bottleToInit, engine: engine)
                     }
@@ -572,7 +588,9 @@ final class AppViewModel {
             reloadSnapshots(for: created.id)
             await scanExecutables(for: created, silentIfUninitialized: true)
             schedulePreviewLaunchPlanRefresh()
-            showBanner("已创建容器「\(created.name)」")
+            if announce {
+                showBanner("已创建容器「\(created.name)」")
+            }
             return true
         } catch {
             presentError(error)
@@ -717,7 +735,9 @@ final class AppViewModel {
             presentError(VermouthError.winetricksNotInstalled)
             return
         }
-        selectedTab = .console
+        if isAdvancedMode {
+            selectedTab = .console
+        }
         appendLogLine(
             LogLine(
                 timestamp: VermouthJSON.currentTimestamp(),
@@ -729,6 +749,7 @@ final class AppViewModel {
             .builtinTool(.winecfg, extraArguments: []),
             in: bottle,
             rescanAfterExit: false,
+            activityName: "安装运行库",
             transformPlan: { base in
                 try WinetricksPlanner.makePlan(basedOn: base, winetricksPath: winetricksPath, verbs: verbs)
             }
@@ -878,11 +899,14 @@ final class AppViewModel {
     }
 
     func runInstaller(at path: String, in bottle: Bottle) async {
-        selectedTab = .console
+        if isAdvancedMode {
+            selectedTab = .console
+        }
         await executeLaunchTarget(
             .installer(path: path),
             in: bottle,
-            rescanAfterExit: true
+            rescanAfterExit: true,
+            activityName: "安装程序"
         )
     }
 
@@ -1011,22 +1035,29 @@ final class AppViewModel {
         saveAppEntry(launchedApp, in: bottle)
 
         let latestBottle = (try? bottleStore.loadBottle(id: bottle.id)) ?? bottle
-        selectedTab = .console
+        if isAdvancedMode {
+            selectedTab = .console
+        }
         await executeLaunchTarget(
             .appEntry(launchedApp),
             in: latestBottle,
             debugChannelsOverride: debugChannelsOverride,
-            rescanAfterExit: false
+            rescanAfterExit: false,
+            activityName: launchedApp.name,
+            appID: launchedApp.id
         )
     }
 
     func launchDiscoveredExecutable(_ exec: DiscoveredExecutable, in bottle: Bottle) async {
-        selectedTab = .console
+        if isAdvancedMode {
+            selectedTab = .console
+        }
         await executeLaunchTarget(
             .executable(path: exec.executablePath, workingDirectory: exec.workingDirectory),
             in: bottle,
             extraArgs: exec.arguments,
-            rescanAfterExit: false
+            rescanAfterExit: false,
+            activityName: exec.name
         )
     }
 
@@ -1349,9 +1380,11 @@ final class AppViewModel {
     // MARK: - Live Process Streaming & Diagnostics (PRD §4.1E)
 
     func stopActiveProcess() {
+        userRequestedStop = true
         activeSessionTask?.cancel()
         activeSessionTask = nil
         isRunningProcess = false
+        launchActivity = .idle
         appendLogLine(
             LogLine(
                 timestamp: VermouthJSON.currentTimestamp(),
@@ -1565,17 +1598,26 @@ final class AppViewModel {
 
     // MARK: - Internal Streaming Execution Engine
 
-    private func executeLaunchTarget(
+    /// 所有 Wine 子进程的唯一出口（L-003）。普通模式下由 `launchActivity` 驱动卡片状态，
+    /// 运行结束后用 `LaunchOutcomeEvaluator` 判断要不要弹出问题助手。
+    func executeLaunchTarget(
         _ target: LaunchTarget,
         in bottle: Bottle,
         extraArgs: [String] = [],
         debugChannelsOverride: String? = nil,
         rescanAfterExit: Bool,
-        transformPlan: ((LaunchPlan) throws -> LaunchPlan)? = nil
+        activityName: String? = nil,
+        appID: UUID? = nil,
+        transformPlan: ((LaunchPlan) throws -> LaunchPlan)? = nil,
+        onExit: (@MainActor @Sendable (LaunchOutcome) async -> Void)? = nil
     ) async {
         guard let engine = resolvedEngine(for: bottle) else {
-            isShowingPreflightSheet = true
-            presentError(VermouthError.noEngineAvailable)
+            if isAdvancedMode {
+                isShowingPreflightSheet = true
+                presentError(VermouthError.noEngineAvailable)
+            } else {
+                isShowingSetupSheet = true
+            }
             return
         }
 
@@ -1583,10 +1625,24 @@ final class AppViewModel {
         activeSessionTask?.cancel()
         activeSessionTask = nil
 
+        let sessionToken = UUID()
+        currentSessionToken = sessionToken
+        userRequestedStop = false
+        sessionFindings = [:]
+
+        let displayName = activityName ?? bottle.name
         let graphicsPkg = resolvedGraphicsPackage(for: bottle)
+        let isFirstRun = !FileManager.default.fileExists(
+            atPath: URL(fileURLWithPath: bottle.prefixPath, isDirectory: true)
+                .appendingPathComponent("drive_c", isDirectory: true).path
+        )
 
         do {
             isRunningProcess = true
+            launchActivity = .preparing(
+                appID: appID,
+                message: isFirstRun ? "首次运行，正在准备 Windows 环境（约 1 分钟）…" : "正在启动「\(displayName)」…"
+            )
             appendLogLine(
                 LogLine(
                     timestamp: VermouthJSON.currentTimestamp(),
@@ -1624,11 +1680,16 @@ final class AppViewModel {
 
             let session = wineRunner.launch(plan)
             let bottleID = bottle.id
+            launchActivity = .running(appID: appID, name: displayName)
 
             activeSessionTask = Task { [weak self] in
                 guard let self else { return }
+                var exitCode: Int32?
                 do {
                     for try await line in session.stream {
+                        if let code = line.exitCode {
+                            exitCode = code
+                        }
                         self.appendLogLine(line)
                     }
                 } catch is CancellationError {
@@ -1647,10 +1708,37 @@ final class AppViewModel {
                             text: "启动错误: \(error.localizedDescription)"
                         )
                     )
-                    self.presentError(error)
+                    if self.isAdvancedMode {
+                        self.presentError(error)
+                    }
                 }
 
+                // 被新会话顶替时，不碰新会话的状态
+                guard self.currentSessionToken == sessionToken else { return }
+
+                let wasStopped = self.userRequestedStop || Task.isCancelled
+                let outcome = LaunchOutcomeEvaluator.evaluate(
+                    exitCode: exitCode,
+                    wasStopped: wasStopped,
+                    newFindings: Array(self.sessionFindings.values)
+                )
+
                 self.isRunningProcess = false
+                self.launchActivity = .idle
+                if outcome.shouldNotifyUser {
+                    self.lastLaunchReport = LaunchReport(
+                        appID: appID,
+                        bottleID: bottleID,
+                        programName: displayName,
+                        outcome: outcome,
+                        findings: Array(self.sessionFindings.values).sorted { $0.severity.rank > $1.severity.rank }
+                    )
+                }
+
+                if let onExit {
+                    await onExit(outcome)
+                }
+
                 if rescanAfterExit,
                    let latestBottle = self.bottles.first(where: { $0.id == bottleID })
                 {
@@ -1659,6 +1747,7 @@ final class AppViewModel {
             }
         } catch {
             isRunningProcess = false
+            launchActivity = .idle
             appendLogLine(
                 LogLine(
                     timestamp: VermouthJSON.currentTimestamp(),
@@ -1685,6 +1774,7 @@ final class AppViewModel {
     }
 
     private func recordDiagnosticFinding(_ finding: DiagnosticFinding) {
+        sessionFindings[finding.id] = finding
         if seenDiagnosticIDs.insert(finding.id).inserted {
             diagnosticFindings.append(finding)
         }
@@ -1726,7 +1816,7 @@ final class AppViewModel {
 
     // MARK: - Static Path Helpers
 
-    private static func canonicalExecutableKey(_ rawPath: String, prefixPath: String) -> String {
+    static func canonicalExecutableKey(_ rawPath: String, prefixPath: String) -> String {
         let resolved: URL
         if rawPath.hasPrefix("/") {
             resolved = URL(fileURLWithPath: rawPath)

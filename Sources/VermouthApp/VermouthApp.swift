@@ -6,15 +6,23 @@ import VermouthCore
 @main
 struct VermouthApp: App {
     @State private var viewModel = AppViewModel()
+    @AppStorage(AppViewModel.advancedModeDefaultsKey) private var isAdvancedMode = false
 
     var body: some Scene {
         WindowGroup("Vermouth") {
-            MainWorkspaceView(viewModel: viewModel)
+            RootView(viewModel: viewModel)
                 .frame(minWidth: 940, minHeight: 620)
         }
         .defaultSize(width: 1120, height: 740)
         .commands {
             CommandGroup(replacing: .newItem) {
+                Button("添加程序…") {
+                    viewModel.promptForProgramFile()
+                }
+                .keyboardShortcut("o", modifiers: [.command])
+
+                Divider()
+
                 Button("新建容器…") {
                     viewModel.openCreateBottleSheet(mode: .createNew)
                 }
@@ -26,7 +34,18 @@ struct VermouthApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
+            CommandGroup(after: .sidebar) {
+                Toggle("高级模式（容器、引擎、日志）", isOn: $isAdvancedMode)
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+            }
+
             CommandMenu("转译环境") {
+                Button("准备运行环境…") {
+                    viewModel.isShowingSetupSheet = true
+                }
+
+                Divider()
+
                 Button("检查转译环境 (Preflight)…") {
                     viewModel.isShowingPreflightSheet = true
                 }
@@ -53,8 +72,61 @@ struct VermouthApp: App {
     }
 }
 
+/// 根据「高级模式」开关在程序库（默认）和容器工作台之间切换；两边共用的弹窗都挂在这里。
+struct RootView: View {
+    @Bindable var viewModel: AppViewModel
+    @AppStorage(AppViewModel.advancedModeDefaultsKey) private var isAdvancedMode = false
+
+    var body: some View {
+        Group {
+            if isAdvancedMode {
+                MainWorkspaceView(viewModel: viewModel)
+            } else {
+                LibraryView(viewModel: viewModel)
+            }
+        }
+        .task {
+            await viewModel.bootstrap()
+        }
+        .sheet(isPresented: $viewModel.isShowingSetupSheet) {
+            EnvironmentSetupSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingPreflightSheet) {
+            PreflightSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingEngineSettings) {
+            EngineSettingsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingCreateBottleSheet) {
+            CreateBottleSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingSnapshotSheet) {
+            SnapshotSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingRuntimeInstaller) {
+            if let bottle = viewModel.selectedBottle {
+                RuntimeInstallerSheet(viewModel: viewModel, bottle: bottle)
+            }
+        }
+        .alert(
+            "操作未能完成",
+            isPresented: Binding(
+                get: { viewModel.errorAlertMessage != nil },
+                set: { if !$0 { viewModel.errorAlertMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) {
+                viewModel.errorAlertMessage = nil
+            }
+        } message: {
+            Text(viewModel.errorAlertMessage ?? "")
+        }
+    }
+}
+
 struct MainWorkspaceView: View {
     @Bindable var viewModel: AppViewModel
+    @AppStorage(AppViewModel.advancedModeDefaultsKey) private var isAdvancedMode = false
 
     @State private var sidebarSearchText: String = ""
     @State private var bottleToRename: Bottle?
@@ -81,6 +153,15 @@ struct MainWorkspaceView: View {
         }
         .searchable(text: $sidebarSearchText, placement: .sidebar, prompt: "筛选容器…")
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    isAdvancedMode = false
+                } label: {
+                    Label("返回程序库", systemImage: "square.grid.2x2")
+                }
+                .help("回到普通模式的程序库 (⇧⌘A)")
+            }
+
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     viewModel.openCreateBottleSheet(mode: .createNew)
@@ -98,28 +179,12 @@ struct MainWorkspaceView: View {
             }
         }
         .task {
-            await viewModel.bootstrap()
+            // 从程序库切进来时补一次当前容器的扫描与快照加载
+            await viewModel.handleSelectedBottleChanged()
         }
         .onChange(of: viewModel.selectedBottleID) { _, _ in
             Task {
                 await viewModel.handleSelectedBottleChanged()
-            }
-        }
-        .sheet(isPresented: $viewModel.isShowingPreflightSheet) {
-            PreflightSheet(viewModel: viewModel)
-        }
-        .sheet(isPresented: $viewModel.isShowingEngineSettings) {
-            EngineSettingsView(viewModel: viewModel)
-        }
-        .sheet(isPresented: $viewModel.isShowingCreateBottleSheet) {
-            CreateBottleSheet(viewModel: viewModel)
-        }
-        .sheet(isPresented: $viewModel.isShowingSnapshotSheet) {
-            SnapshotSheet(viewModel: viewModel)
-        }
-        .sheet(isPresented: $viewModel.isShowingRuntimeInstaller) {
-            if let bottle = viewModel.selectedBottle {
-                RuntimeInstallerSheet(viewModel: viewModel, bottle: bottle)
             }
         }
         .sheet(item: $bottleToRename) { bottle in
@@ -184,19 +249,6 @@ struct MainWorkspaceView: View {
             } else {
                 Text("删除「\(bottle.name)」将清理该容器下的文件，此操作不可撤销。")
             }
-        }
-        .alert(
-            "操作未能完成",
-            isPresented: Binding(
-                get: { viewModel.errorAlertMessage != nil },
-                set: { if !$0 { viewModel.errorAlertMessage = nil } }
-            )
-        ) {
-            Button("好", role: .cancel) {
-                viewModel.errorAlertMessage = nil
-            }
-        } message: {
-            Text(viewModel.errorAlertMessage ?? "")
         }
     }
 

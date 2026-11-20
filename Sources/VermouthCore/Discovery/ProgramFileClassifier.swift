@@ -99,3 +99,29 @@ public enum ProgramFileClassifier {
         return cleaned
     }
 }
+
+/// 安装程序结束后，决定哪些新出现的程序自动加入程序库。
+public enum InstalledProgramAdopter {
+    /// 只扫描到 Program Files 里的 `.exe`（没有快捷方式）时，最多自动收录这么多个；更多就交给用户挑，避免把工具程序全塞进程序库。
+    public static let maximumUnshortcuttedAdoptions = 3
+
+    public static func programsToAdopt(
+        before: [DiscoveredExecutable],
+        after: [DiscoveredExecutable]
+    ) -> [DiscoveredExecutable] {
+        let known = Set(before.map(\.id))
+        var seen = Set<String>()
+        let fresh = after.filter { exec in
+            guard !known.contains(exec.id), seen.insert(exec.id).inserted else { return false }
+            let fileName = URL(fileURLWithPath: exec.executablePath).lastPathComponent
+            return !ProgramFileClassifier.isHelperExecutable(fileName: fileName)
+                && !ProgramFileClassifier.isHelperExecutable(fileName: exec.name)
+        }
+
+        let shortcuts = fresh.filter { $0.source != .programFilesScan }
+        if !shortcuts.isEmpty {
+            return shortcuts
+        }
+        return fresh.count <= maximumUnshortcuttedAdoptions ? fresh : []
+    }
+}
