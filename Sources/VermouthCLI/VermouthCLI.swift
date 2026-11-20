@@ -61,6 +61,8 @@ enum VermouthCLI {
                 return try CLICommands.runScan(args: rest, context: context)
             case "diagnose":
                 return try CLICommands.runDiagnose(args: rest, context: context)
+            case "icon":
+                return try CLICommands.runIcon(args: rest)
             case "snapshot":
                 return try CLICommands.runSnapshot(args: rest, context: context)
             case "recipe":
@@ -480,6 +482,7 @@ enum CLIOutput: Sendable {
                   [--json] [-- <args...>]                         Run a Windows .exe or .msi in bottle
               scan <bottle> [--json]                              Scan shortcuts & Program Files .exe
               diagnose <log-file-path> [--json]                   Diagnose a Wine log file
+              icon <exe-or-dll> [--output <file.ico>] [--json]    Extract the program icon as .ico
 
             SNAPSHOTS & RECIPES:
               snapshot create <bottle> <path> [--label <name>]
