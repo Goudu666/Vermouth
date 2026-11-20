@@ -716,7 +716,8 @@ final class RunnerTests: XCTestCase {
             }
             XCTAssertTrue(reason.contains("regedit import error"))
         }
-        let failedRegUnixPath = try XCTUnwrap(await failureCapture.current().capturedUnixPath)
+        let failureSnapshot = await failureCapture.current()
+        let failedRegUnixPath = try XCTUnwrap(failureSnapshot.capturedUnixPath)
         XCTAssertFalse(FileManager.default.fileExists(atPath: failedRegUnixPath))
     }
 

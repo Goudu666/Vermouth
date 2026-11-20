@@ -317,7 +317,8 @@ final class PlatformBoundariesTests: XCTestCase {
         }
 
         var iterator = readyStream.makeAsyncIterator()
-        let childPID = try XCTUnwrap(await iterator.next(), "Child process did not emit startup PID")
+        let maybeChildPID = await iterator.next()
+        let childPID = try XCTUnwrap(maybeChildPID, "Child process did not emit startup PID")
 
         consumerTask.cancel()
         _ = try? await consumerTask.value
