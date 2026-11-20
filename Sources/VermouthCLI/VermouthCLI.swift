@@ -363,7 +363,13 @@ enum CLIOutput: Sendable {
     }
 
     static func printFindings(_ findings: [DiagnosticFinding], toStderr: Bool = false) {
-        let emit: (String) -> Void = toStderr ? writeStderr : writeStdout
+        let emit: (String) -> Void = { line in
+            if toStderr {
+                writeStderr(line)
+            } else {
+                writeStdout(line)
+            }
+        }
         for finding in findings {
             let sev = finding.severity.rawValue.uppercased()
             emit("[\(sev)] (\(finding.category.rawValue)) \(finding.title)")
