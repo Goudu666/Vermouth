@@ -487,6 +487,7 @@ public final class EngineManager: EngineManaging, Sendable {
 
         // 先执行只读探测，再在单一原子 actor turn 内完成去重与持久化（B-4）
         let engine = try await inspectCandidateStrict(candidate)
+        try Self.verifyDylibDependencies(of: engine)
         let canonicalNewRoot = Self.canonicalPath(engine.rootPath)
 
         try await configStore.mutate { config in
@@ -679,6 +680,36 @@ public final class EngineManager: EngineManaging, Sendable {
             source: candidate.source,
             capabilities: capabilities,
             isQuarantined: quarantined
+        )
+    }
+
+    /// 自定义引擎（如单独拷出来的 Sikarugir `wswine.bundle`）常缺 `@rpath` 依赖，
+    /// 登记成功后才在运行时报 `dyld: Library not loaded: @rpath/libinotify.0.dylib`。
+    /// 登记前检查 `bin/wine`、`bin/wineserver` 与 `x86_64-unix/ntdll.so`，缺库时列出来并拒绝登记。
+    /// 只用于用户手动登记：自动发现的引擎走 `inspectCandidateIfValid`，在那里抛错会让引擎静默消失。
+    internal static func verifyDylibDependencies(of engine: WineEngine) throws {
+        let rootURL = URL(fileURLWithPath: engine.rootPath, isDirectory: true)
+        let ntdllCandidates = [
+            rootURL.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so").path,
+            rootURL.appendingPathComponent("lib64/wine/x86_64-unix/ntdll.so").path,
+        ].filter { isRegularFile(atPath: $0) }
+
+        let unresolved = try MachODependencyInspector.unresolvedDependencies(
+            engineRoot: engine.rootPath,
+            executables: [engine.wineBinaryPath, engine.wineserverPath],
+            loadedLibraries: ntdllCandidates,
+            hostExecutable: engine.wineBinaryPath
+        )
+        guard !unresolved.isEmpty else { return }
+
+        let details = unresolved.map { item in
+            "\(item.binary) → \(item.dependency)（已查找：\(item.searchedPaths.joined(separator: ", "))）"
+        }
+        throw VermouthError.invalidEngineRoot(
+            path: engine.rootPath,
+            reason: "引擎缺少运行所需的动态库，启动时会报 dyld: Library not loaded：\n"
+                + details.joined(separator: "\n")
+                + "\n请把缺失的 .dylib 补进引擎的 lib 目录后重新登记。"
         )
     }
 
