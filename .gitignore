@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager & Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserdata/
+*.moved-aside
+*.hmap
+*.dSYM.zip
+*.dSYM
+
+# Build & packaging outputs
+Vermouth.app/
+*.dmg
+dist/
