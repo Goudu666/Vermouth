@@ -1,0 +1,24 @@
+{
+  "chineseLocalizationSuggested": true,
+  "dllOverrides": [],
+  "environmentVariables": {},
+  "id": "dx11-modern-default",
+  "knownIssues": [
+    "DXMT builtin 图形包依赖支持 WINEDLLPATH_PREPEND 的 Wine 引擎，无法通过复制到 system32 降级生效。",
+    "DirectX 12 游戏不在 DXMT / DXVK-macOS 支持范围内。",
+    "内核级或在线反作弊系统（如 EAC、BattlEye、Vanguard）不受支持。"
+  ],
+  "name": "DirectX 11 Modern 64-bit Default",
+  "notes": [
+    "DXMT builtin 发行版（如 dxmt-v0.80-builtin.tar.gz）通过 WINEDLLPATH_PREPEND 零拷贝注入并自动发出 =b 覆写；切勿为 d3d11、dxgi、d3d10core 手动添加 n,b 覆写。",
+    "若个别 DirectX 10/11 游戏在 DXMT 下出现贴图或着色器异常，可直接在容器图形设置中一键切换至 DXVK-macOS 或回退至 WineD3D。",
+    "可在显示设置中开启 Apple Metal Performance HUD 实时监控帧率与 GPU 帧时间。"
+  ],
+  "recommendedBackend": "dxmt",
+  "recommendedSyncMode": "msync",
+  "recommendedWindowsVersion": "win10",
+  "schemaVersion": 1,
+  "summary": "64 位 DirectX 10/11 现代单机游戏通用配方（DXMT Metal 直译 + MSync）",
+  "targetArchitecture": "x86_64",
+  "wineDebugChannels": "-all,err+all"
+}

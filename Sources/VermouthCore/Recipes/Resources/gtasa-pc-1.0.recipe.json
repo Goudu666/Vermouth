@@ -1,0 +1,37 @@
+{
+  "chineseLocalizationSuggested": true,
+  "dllOverrides": [
+    {
+      "dllName": "dinput8",
+      "enabled": false,
+      "mode": "n,b",
+      "note": "启用 ASI Loader / ModLoader 时勾选"
+    },
+    {
+      "dllName": "vorbisfile",
+      "enabled": false,
+      "mode": "n,b",
+      "note": "启用 CLEO / 音频钩子时勾选"
+    }
+  ],
+  "environmentVariables": {},
+  "id": "gtasa-pc-1.0",
+  "knownIssues": [
+    "macOS 上 DirectX 9 需使用 WineD3D（DXVK-macOS 已移除 d3d9.dll，MoltenVK 对 DX9 存在兼容问题）。",
+    "该程序为 32 位 x86 PE 可执行文件，必须使用支持 WoW64 / 32 位的 Wine 引擎（如 Wine Stable 11+ 或 Wine Crossover）。",
+    "原版 PC 1.0 帧率高于 30/60 FPS 时可能出现物理或游泳异常，建议开启游戏内帧率限制或搭配 SilentPatch。"
+  ],
+  "name": "GTA: San Andreas (PC 1.0)",
+  "notes": [
+    "推荐使用新 WoW64 单二进制 Wine 引擎（如 Wine Stable 11+），切勿手动设置 WINEARCH=win32。",
+    "如需安装 ASI Loader、ModLoader、SilentPatch 或宽屏补丁，请先为配置与存档目录创建快照，再按需勾选 dinput8 / vorbisfile 的 native,builtin 覆写。",
+    "已建议开启中文环境与字体映射，避免汉化补丁界面出现方块乱码。"
+  ],
+  "recommendedBackend": "wined3d",
+  "recommendedSyncMode": "msync",
+  "recommendedWindowsVersion": "win7",
+  "schemaVersion": 1,
+  "summary": "32 位 DirectX 9 经典游戏标杆配方（WoW64 + WineD3D + 可选 ASI/ModLoader 覆写模板）",
+  "targetArchitecture": "x86_32",
+  "wineDebugChannels": "-all,err+all"
+}

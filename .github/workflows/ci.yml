@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build-and-test-macos:
+    name: Build, Test & Bundle (macos-15 arm64)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect toolchain and runner environment
+        run: |
+          swift --version
+          uname -m
+          sw_vers
+
+      - name: Build all SwiftPM targets
+        run: swift build
+
+      - name: Run unit tests in parallel
+        run: swift test --parallel
+
+      - name: Bundle Vermouth.app (debug) and verify codesign
+        run: |
+          chmod +x Scripts/bundle-app.sh
+          ./Scripts/bundle-app.sh --configuration debug --output dist
+
+      - name: Smoke-verify CLI and packaged Vermouth.app resources
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+
+          echo "==> Smoke testing SwiftPM vermouth CLI..."
+          "$BIN_PATH/vermouth" --version
+          "$BIN_PATH/vermouth" recipes
+
+          echo "==> Verifying Vermouth.app resource bundle layout..."
+          test -d "dist/Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
+          if [[ -n "$(find dist/Vermouth.app -maxdepth 1 -name '*.bundle')" ]]; then
+            echo "error: resource bundle must not exist at Vermouth.app root" >&2
+            exit 1
+          fi
+
+          echo "==> Smoke testing bundled companion CLI inside Vermouth.app..."
+          "dist/Vermouth.app/Contents/MacOS/vermouth" --version
+          "dist/Vermouth.app/Contents/MacOS/vermouth" recipes
