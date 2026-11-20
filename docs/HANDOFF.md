@@ -6,51 +6,47 @@
 
 ```yaml
 baton_holder: claude             # 当前持棒者：antigravity | claude。只有持棒者可以推送主开发分支
-next_holder: antigravity         # 需要 Mac 真机验证时交还 Antigravity
-main_dev_branch: claude/project-thread-wsp3r9   # 基于 feat/v0.1-mvp 继续开发，经 PR 合入 main
-last_known_commit: 05ff25d       # fix(tests): move await outside XCTUnwrap synchronous autoclosure
-last_ci_run: 44710039726         # macos-15，结论：failure（编译通过，148 个测试中 2 个失败）
-updated_at: 2026-11-20T09:40Z
-updated_by: claude               # Antigravity 已于 2026-11-20 交棒（未留 HANDOFF，本版由 Claude 基于远端代码与 CI 日志整理）
+next_holder: antigravity         # 需要 Mac 真机验证时交还 Antigravity（或由用户本人验证）
+main_dev_branch: claude/project-thread-wsp3r9   # 基于 feat/v0.1-mvp 继续开发，经 PR #1 合入 main
+last_known_commit: 6e8ed7d       # 最后一个代码提交（运行库安装器）；其后只有文档提交
+last_ci_run: 44714569487         # macos-15 ✅ + core-linux ✅ + agent-docs ✅
+updated_at: 2026-11-20T10:20Z
+updated_by: claude
 ```
 
 ---
 
 ## 1. 现在停在哪
 
-- v0.1 全部代码已落地：`VermouthCore`（Round 1–3 模块）、`VermouthCLI`（全命令）、`VermouthApp`（完整 SwiftUI 界面），约 1.9 万行源码 + 7.9 千行测试。
-- 最近 3 次 CI（run #3–#5）都是红灯，Antigravity 正在逐个修：#3 编译错 → #4 修 CLI 三元表达式歧义 → #5 编译通过，**仅剩 2 个测试失败**。
-- `docs/LESSONS_LEARNED.md` 只写到 Round 1 复盘，Round 2–4 的复盘还没写。
+- v0.1 代码全部落地且 **CI 全绿**：实时日志阻塞（L-017）与跨平台测试问题（L-018）已修，Linux 169/169。
+- 已完成 M2 第一批界面：App 图标与品牌色板、`.exe` 真实图标卡片墙（Clean-Room `PEIconExtractor` + 磁盘缓存）、转译链路可视化、彩色日志与级别筛选、三步引导。
+- 已提前完成 M3 运行库安装器（winetricks 卡片 + 诊断卡片一键安装），README 门面已更新。
+- **所有 UI 只在 macOS CI 上编译通过，还没有人在真机上看过观感。**
 
 ## 2. 下一步（按优先级）
 
 | # | 任务 | 说明 | 建议执行者 |
 |---|---|---|---|
-| P0 | 修 `LiveCommandRunner` 实时日志阻塞 | 根因与修法见 §3-1，修完 `testLiveCommandRunnerCancellationTerminatesChildPromptly` 应转绿 | 持棒者 |
-| P0 | 修 `testLiveCommandRunnerEnvironmentInheritanceToggleAndWorkingDirectory` | 测试自身的问题，见 §3-2 | 持棒者 |
-| P1 | CI 全绿后补写 Round 2–4 复盘到 `LESSONS_LEARNED.md` | 把 §3 的两个坑沉淀为 L-017 / L-018 | 持棒者 |
-| P1 | 本机真机冒烟（PRD §7） | 用 `wine-stable` 实测一条 32 位 DX9 + 一条 DXMT 链路，结果写进 STATUS | 只能 Antigravity（需要 Mac） |
-| P2 | `ci.yml` 增加 `claude/**`、`ag/**` 分支触发 | 让非持棒 Agent 的分支也能跑 macOS CI | 持棒者 |
-| P2 | 开 `feat/v0.1-mvp → main` 的 PR | 由用户决定合并时机 | 任一 |
+| P0 | 真机冒烟（PRD §7） | `./Scripts/bundle-app.sh --configuration debug --output dist` 后双击 `dist/Vermouth.app`：建容器 → 装 `.exe` → 看实时日志与卡片图标 → 触发一次诊断卡片 | 用户 / Antigravity（需要 Mac） |
+| P0 | 界面观感确认 | 截图回传，按 `docs/UI_PROPOSALS.md` 1–5 逐项改 ✅ 或记录问题 | 同上 |
+| P1 | README 真机截图 / GIF | 截图放 `Branding/screenshots/`，替换 README 里的链路图占位 | 任一 |
+| P1 | 一键导出 `.app` 快捷方式 | ROADMAP M3，Dock / Launchpad 直开 | Claude |
+| P2 | 黑屏检测 / 图形后端 A/B 对比 | ROADMAP 创意储备池 #1 / #3，作品集亮点 | Claude |
+| P2 | 合并 PR #1 → `main`，打 `v0.1.0` | 用户决定时机 | 用户 |
 
-## 3. 已知问题（附根因，已在 Linux 上复现验证）
+## 3. 已知问题
 
-1. **实时日志其实不实时**（影响产品功能「实时日志」，不只是测试）
-   - 现象：`LiveCommandRunner.stream` 在子进程退出前收不到任何一行输出；CI 中取消测试等满 30 秒才结束。
-   - 根因：`FileHandleBox.readChunk` 用的 `FileHandle.read(upToCount: 16384)` 对管道会**一直阻塞到凑满 16KB 或 EOF**，所以 Wine 日志只会在进程退出时一次性吐出。
-   - 修法（已在 Linux 副本中验证，修后 6 个 `LiveCommandRunner` 测试中 5 个通过，第 6 个见第 3 条）：把 `readChunk` 换成单次 POSIX `read(2)`（有任何字节就返回，`EINTR` 重试，0 表示 EOF），或改用 `FileHandle.availableData`。
-2. **环境继承测试在 macOS 上的路径比较错误**（测试 bug，不是产品 bug）
-   - `PlatformBoundariesTests.swift:279` 期望 `PWD == tempRoot.resolvingSymlinksInPath().path`。macOS 上临时目录是 `/var/folders/...`，它是 `/private/var/...` 的符号链接，而 Foundation 的 `resolvingSymlinksInPath()` 会**主动去掉 `/private` 前缀**，`/bin/pwd` 却返回带 `/private` 的真实路径，二者永远不等。Linux 上无此问题，所以该测试在 Linux 通过。
-   - 修法：用 `realpath(3)` 求期望值，或比较时把两边都去掉 `/private` 前缀。
-3. **Linux 专属**：取消后子进程收不到 SIGTERM
-   - swift-corelibs-foundation 的 `Process` 从 libdispatch 工作线程 `posix_spawn`，子进程继承了**屏蔽 SIGTERM 的信号掩码**（实测 `/proc/<pid>/status` 中 `SigBlk: fffffffe3bfbea27`）。macOS 不受影响。产品只面向 macOS，可不修；若要 Linux 测试全绿，可在取消时改发 `SIGKILL`，或给该测试加 `#if os(macOS)`。
-4. **Linux 专属**：`testLiveHTTPFetcherDownloadReportsProgressWritesAtomicallyAndPreservesFileOnHTTP500` 在 Linux 上以 SIGILL 崩溃（FoundationNetworking 差异），macOS 正常。
+1. **UI 观感未验证**：云端无法渲染 SwiftUI，卡片墙间距、转译链路在窄窗口下的横向滚动、深色模式下的品牌色对比度都可能需要微调。
+2. **运行库安装进度只有日志**：winetricks 没有结构化进度输出，目前在控制台看日志；逐项进度需解析其输出，未做。
+3. **Linux 专属**：`LiveHTTPFetcher` 下载测试在 Linux 上以 SIGILL 崩溃（FoundationNetworking 差异），已 `XCTSkipIf`；取消子进程在 Linux 上改发 SIGKILL（L-018）。产品只面向 macOS。
 
 ## 4. 给下一个 Agent 的提醒
 
-- Claude 在云端的环境：`sudo ./Scripts/setup-cloud-linux.sh && export PATH=/opt/swift/usr/bin:$PATH`，约 1 分钟装好 Swift 6.3.3，Core + CLI 编译约 10 秒。
-- `docs/ARCHITECTURE.md` §4 的目录树没有列出 `UIComponents.swift`、`AdvancedOverridesView.swift`、`CLICommands.swift`，下次动架构文档时顺手补上。
+- Claude 云端环境：`sudo ./Scripts/setup-cloud-linux.sh && export PATH=/opt/swift/usr/bin:$PATH`；App 文件可用 `swiftc -parse` 做语法检查，但类型检查只能靠 macOS CI。
+- 新的视觉组件统一放 `Sources/VermouthApp/VermouthDesign.swift`，色值只从 `VermouthTheme` 取。
+- 新的 winetricks verb 加到 `WinetricksCatalog.verbs`；测试会检查诊断规则建议的 verb 都在目录里。
 - 改规则请改 `AGENTS.md`，然后运行 `./Scripts/sync-agent-docs.sh`，不要直接改 `CLAUDE.md` / `GEMINI.md`。
+- 无未推送内容。
 
 ---
 

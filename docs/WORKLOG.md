@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-11-20 · Claude · 接棒：CI 转绿、图标卡片墙、转译链路、运行库安装器
+
+- 修实时日志阻塞（`read(2)` 替代 `read(upToCount:)`，L-017）与 `/private/var` 路径、Linux 信号差异（L-018）；新增 `core-linux` CI 任务。
+- Core：Clean-Room `PEIconExtractor` + `ProgramIconCache`、`WineLogClassifier`、`TranslationPipeline`、`Winetricks` 目录与计划；CLI 新增 `vermouth icon`。
+- App：品牌图标与色板、程序卡片墙（真实 `.exe` 图标）、转译链路、彩色日志与级别筛选、三步引导、运行库安装器 + 诊断一键安装。
+- 提交 `2de80e4`..`6e8ed7d` + 文档提交；CI run 44714569487 全绿，Linux 169/169。
+- 留给真机持有者：冒烟与界面观感确认（见 HANDOFF §2）。
+
 ## 2026-11-20 · Claude · 云端环境、项目文档与双 Agent 协作机制
 
 - 在 Linux 云端装好 Swift 6.3.3（`Scripts/setup-cloud-linux.sh`，官方站不可达时从 mirror.gcr.io 拉官方镜像层），Core + CLI 编译通过，Linux 上 148 个测试中 146 个通过。

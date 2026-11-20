@@ -7,8 +7,8 @@
 
 | 任务 | 完成标准 |
 |---|---|
-| 修 `LiveCommandRunner` 流式阻塞 + 2 个失败测试 | macOS CI 148/148 绿灯 |
-| Round 2–4 复盘写入 `LESSONS_LEARNED.md` | 新增 L-017 起的约束条目 |
+| ✅ 修 `LiveCommandRunner` 流式阻塞 + 2 个失败测试 | macOS CI 绿灯（2026-11-20） |
+| ✅ Round 2–4 复盘写入 `LESSONS_LEARNED.md` | 已新增 L-017、L-018 |
 | PRD §7 真机冒烟 | 在用户 Mac 上：`wine-stable` + GTA:SA（WineD3D）进入游戏；任一 DX11 游戏 + DXMT 进入游戏；记录帧率与参数 |
 | `.app` 真机自测 | 双击启动、建容器、装 `.exe`、看实时日志、触发一次诊断卡片 |
 | 合并到 `main` 并打 `v0.1.0` tag | 用户确认后合并 |
@@ -17,14 +17,14 @@
 
 | 任务 | 说明 |
 |---|---|
-| 视觉识别与界面打磨 | 见 `docs/UI_PROPOSALS.md` 第一批（程序图标墙、转译链路可视化、日志着色） |
-| README 门面 | 截图 / GIF、架构图、一行安装命令、与 CrossOver / Whisky 的对比表 |
-| Linux CI 任务 | 在 `ubuntu-latest` 用 `swift:6.3` 镜像跑 Core 单测，几十秒出结果，比 macOS runner 快且免费额度更多；平台差异测试用 `#if os(macOS)` 标注 |
+| 🚧 视觉识别与界面打磨 | `docs/UI_PROPOSALS.md` 第一批 1–5 已实现，待真机看观感 |
+| 🚧 README 门面 | 图标、徽章、转译链路图已加；还差真机截图 / GIF 与对比表 |
+| ✅ Linux CI 任务 | `core-linux` 已上线：在 `ubuntu-latest` 用 `swift:6.3` 镜像跑 Core 单测，几十秒出结果，比 macOS runner 快且免费额度更多；平台差异测试用 `#if os(macOS)` 标注 |
 | 代码覆盖率徽章 | `swift test --enable-code-coverage` + `llvm-cov` 报告 |
 
 ## M3 · v0.2：日常体验补齐（PRD §4.2）
 
-- 运行库可视化安装器（包装 `winetricks`：`vcrun2022`、`d3dx9`、`d3dcompiler_47`、核心字体，显示进度）。
+- ✅ 运行库可视化安装器（2026-11-20 提前完成；后续可加逐项进度解析）。
 - 一键导出独立 `.app` 快捷方式（放进 Dock / Launchpad 双击直开）。
 - 配方导入导出 UI 完整化（核心的脱敏导出已实现）。
 - Steam 容器模板；GitHub Actions 自动构建 DMG 发布。
@@ -42,5 +42,5 @@
 1. **黑屏 / 卡死自动检测**：启动游戏后用 ScreenCaptureKit 低频截取游戏窗口，计算亮度直方图与帧间差分；连续 N 秒全黑或画面静止 + 无日志输出 → 自动弹出诊断卡片（「可能是图形层初始化失败，试试切换到 WineD3D」）。纯 Swift + Accelerate，无需模型。
 2. **乱码识别**：用 Vision 框架 `VNRecognizeTextRequest` 对游戏窗口做 OCR，检测到大量「□」方块字或典型 mojibake 字符 → 一键建议「中文环境补全」。把 PRD 里的中文痛点从「被动修」变成「主动发现」。
 3. **图形后端 A/B 对比**：同一游戏依次用 WineD3D / DXVK / DXMT 启动 60 秒，读取 Metal HUD 帧时间（或截屏估算帧率），自动生成对比卡片并推荐最佳组合，结果可写回配方。
-4. **自动封面与图标**：从 PE 资源段（`RT_GROUP_ICON`）Clean-Room 解析出 `.exe` 图标，作为程序卡片封面；再用图像主色提取给每个容器生成配色。延续 `PEInspector` 的技术路线。
+4. **自动封面与图标**（✅ 图标部分已落地，主色提取配色待做）：从 PE 资源段（`RT_GROUP_ICON`）Clean-Room 解析出 `.exe` 图标，作为程序卡片封面；再用图像主色提取给每个容器生成配色。延续 `PEInspector` 的技术路线。
 5. **启动截图墙**：每次成功启动自动截一帧，形成每个游戏的「运行相册」，同时作为兼容性证据可附到社区配方里。

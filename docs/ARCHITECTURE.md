@@ -99,7 +99,8 @@ Vermouth/
 ├── Package.swift                             # Swift 6，macOS 14+，含 Core / CLI / (#if os(macOS) App) / Tests
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                            # macos-15 (arm64) 编译 + 单测 + bundle-app.sh 实机验证
+│       ├── ci.yml                            # core-linux 快检 + macos-15 (arm64) 编译、单测、bundle-app.sh 实机验证
+│       └── agent-docs.yml                    # 检查 CLAUDE.md / GEMINI.md 与 AGENTS.md 同步
 ├── docs/
 │   ├── ARCHITECTURE.md                       # 本文档：架构、技术栈、成熟项目调研
 │   ├── INTERFACES.md                         # 核心协议、完整数据模型、JSON Schema、CLI 契约
@@ -107,7 +108,7 @@ Vermouth/
 ├── Sources/
 │   ├── VermouthCore/
 │   │   ├── Common/
-│   │   │   ├── VermouthPaths.swift           # 应用支持目录（支持 VERMOUTH_HOME 注入）
+│   │   │   ├── VermouthPaths.swift           # 应用支持目录（支持 VERMOUTH_HOME 注入）、cache/icons 图标缓存
 │   │   │   ├── VermouthJSON.swift            # 统一 ISO-8601(毫秒) + 原子写盘编解码器
 │   │   │   ├── PureSHA256.swift              # Clean-Room 纯 Swift SHA-256（零 CryptoKit/平台锁定）
 │   │   │   └── ShellQuoting.swift            # POSIX 安全引号转义与 Windows/Unix 路径互转
@@ -128,7 +129,9 @@ Vermouth/
 │   │   │   └── LiveHTTPFetcher.swift         # URLSession 数据与带进度下载（兼容 Linux/macOS）
 │   │   ├── Inspection/
 │   │   │   ├── PEInspector.swift             # 纯 Swift PE32/PE32+ 头部解析器
-│   │   │   └── ShellLinkParser.swift         # 纯 Swift Windows .lnk 快捷方式解析器
+│   │   │   ├── ShellLinkParser.swift         # 纯 Swift Windows .lnk 快捷方式解析器
+│   │   │   ├── PEIconExtractor.swift         # Clean-Room RT_GROUP_ICON/RT_ICON 解析并重建 .ico
+│   │   │   └── ProgramIconCache.swift        # 图标磁盘缓存（键 = 路径 + 大小 + mtime 的 SHA-256）
 │   │   ├── Engines/
 │   │   │   └── EngineManager.swift
 │   │   ├── Bottles/
@@ -139,11 +142,14 @@ Vermouth/
 │   │   ├── Runner/
 │   │   │   ├── DllOverrideFormatter.swift    # 规范化拼接、内置预设、DXMT builtin 冲突检测
 │   │   │   ├── EnvironmentBuilder.swift      # 确定性 LaunchPlan、.msi 转 Z:\、预注入终端脚本
-│   │   │   └── WineRunner.swift              # 进程调度、日志落盘与流式输出、wineboot/wineserver 管理
+│   │   │   ├── WineRunner.swift              # 进程调度、日志落盘与流式输出、wineboot/wineserver 管理
+│   │   │   ├── TranslationPipeline.swift     # 转译链路模型（程序架构 → Rosetta → Wine → 图形层 → Metal）
+│   │   │   └── Winetricks.swift              # 运行库目录与 winetricks LaunchPlan 生成（verb 白名单校验）
 │   │   ├── Discovery/
 │   │   │   └── ExecutableScanner.swift       # .lnk + Program Files 扫描与噪点过滤
 │   │   ├── Diagnostics/
-│   │   │   └── CrashDiagnoser.swift          # 规则化崩溃诊断 + DiagnosticQuickFix 建议
+│   │   │   ├── CrashDiagnoser.swift          # 规则化崩溃诊断 + DiagnosticQuickFix 建议
+│   │   │   └── WineLogClassifier.swift       # err/warn/fixme/trace 级别与通道识别（含 MoltenVK 日志）
 │   │   ├── Snapshots/
 │   │   │   └── SnapshotManager.swift         # SHA-256 校验、防路径穿越、原子替换安全回滚
 │   │   ├── Recipes/
@@ -152,7 +158,9 @@ Vermouth/
 │   │   │       ├── gtasa-pc-1.0.recipe.json
 │   │   │       └── dx11-modern-default.recipe.json
 │   ├── VermouthCLI/
-│   │   └── VermouthCLI.swift
+│   │   ├── VermouthCLI.swift
+│   │   ├── CLICommands.swift
+│   │   └── CLIIconCommand.swift              # vermouth icon：导出 .exe 图标
 │   └── VermouthApp/                          # #if os(macOS) 原生 SwiftUI + AppKit 界面
 │       ├── VermouthApp.swift
 │       ├── AppViewModel.swift
@@ -161,9 +169,17 @@ Vermouth/
 │       ├── BottleConfigView.swift
 │       ├── ConsoleLogView.swift
 │       ├── EngineSettingsView.swift
+│       ├── AdvancedOverridesView.swift
+│       ├── UIComponents.swift                # 诊断卡片、徽章等通用组件
+│       ├── VermouthDesign.swift              # 品牌色板、程序卡片、图标视图、转译链路视图
+│       ├── RuntimeInstallerSheet.swift       # 运行库安装器
 │       └── SnapshotSheet.swift
+├── Branding/                                 # AppIcon.icns + 1024px 母版（由 Scripts/make-app-icon.py 生成）
 ├── Scripts/
-│   └── bundle-app.sh                         # swift build + Info.plist + 资源 Bundle 复制 + ad-hoc codesign
+│   ├── bundle-app.sh                         # swift build + Info.plist + 图标 + 资源 Bundle 复制 + ad-hoc codesign
+│   ├── make-app-icon.py                      # 生成 App 图标
+│   ├── setup-cloud-linux.sh                  # 云端 Linux 安装 Swift 工具链
+│   └── sync-agent-docs.sh                    # 由 AGENTS.md 生成 CLAUDE.md / GEMINI.md
 └── Tests/
     └── VermouthCoreTests/
 ```

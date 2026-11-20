@@ -1,8 +1,40 @@
-# Vermouth
+<p align="center">
+  <img src="Branding/AppIcon-1024.png" width="160" alt="Vermouth app icon">
+</p>
 
-面向 Apple Silicon Mac 的**开源、原生 macOS Windows 应用与游戏转译启动器**（对标轻量现代版 CrossOver）。
+<h1 align="center">Vermouth</h1>
 
-> **当前版本**：`v0.1.0`（MVP 核心转译闭环已完成：包含 `VermouthCore` 核心库、`vermouth` 命令行工具与原生 SwiftUI `Vermouth.app` 桌面应用）。完整架构与契约见 [PRD.md](./PRD.md)、[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)、[docs/INTERFACES.md](./docs/INTERFACES.md) 与复盘约束录 [docs/LESSONS_LEARNED.md](./docs/LESSONS_LEARNED.md)。
+<p align="center">
+  <b>把 Windows 游戏和软件，倒进你的 Apple Silicon Mac。</b><br>
+  开源、原生 SwiftUI 的 Windows 转译启动器 · 对标轻量现代版 CrossOver
+</p>
+
+<p align="center">
+  <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white">
+  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple">
+  <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-7A1733">
+  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-E39B3A">
+</p>
+
+> **当前版本**：`v0.1.0`（MVP 核心转译闭环：`VermouthCore` 核心库、`vermouth` 命令行工具与原生 SwiftUI `Vermouth.app`）。
+> 现状与路线图见 [docs/STATUS.md](./docs/STATUS.md)、[docs/ROADMAP.md](./docs/ROADMAP.md)；架构与契约见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)、[docs/INTERFACES.md](./docs/INTERFACES.md)。
+
+## 转译链路，一眼看懂
+
+Vermouth 把每个容器背后真实运行的整条链路摊开给你看，界面里显示的命令就是实际执行的命令：
+
+```mermaid
+flowchart LR
+    A["Windows 程序<br/>x86 / x64 · DirectX"] --> B["Rosetta 2<br/>x86_64 → arm64"]
+    B --> C["Wine 11.x<br/>Win32 API → macOS"]
+    C --> D1["DXMT<br/>D3D10/11 → Metal"]
+    C --> D2["DXVK-macOS<br/>D3D9-11 → Vulkan"]
+    C --> D3["WineD3D<br/>D3D → OpenGL"]
+    D2 --> E2["MoltenVK"]
+    D1 --> F["Metal · Apple GPU"]
+    E2 --> F
+    D3 --> F
+```
 
 ---
 
@@ -13,6 +45,9 @@
 - **容器级图形转译层切换**：支持按容器无损切换 `WineD3D`（DX7/8/9 兜底）、`DXVK-macOS`（Vulkan → MoltenVK → Metal）与 `DXMT`（DX10/11 → Metal 直译）；支持官方 GitHub Releases 在线拉取与本地归档导入，自动识别 `WINEDLLPATH_PREPEND` 零拷贝模式与容器 DLL 备份覆盖/回滚模式。
 - **程序安装、扫描与社区配方**：支持拖入或选择 `.exe` / `.msi` 安装器直接安装，自动解析 Start Menu / Desktop `.lnk` 快捷方式与 `Program Files` 可执行程序；内置 `GTA: San Andreas (PC 1.0)`（32 位 DX9 标杆）与 `DirectX 11 Modern 64-bit Default` 配方，支持社区 `.recipe.json` 导入与脱敏导出。
 - **实时流式日志与崩溃诊断**：捕获 Wine 输出流并做规则化故障翻译（缺失 DLL 运行库映射、`com.apple.quarantine` 拦截、32/64 位架构不匹配、图形后端初始化失败、`wineserver` MSync 冲突），提供一键修复快捷动作。
+- **程序卡片墙与真实图标**：自研 Clean-Room PE 资源解析器直接从 `.exe` 提取图标（`RT_GROUP_ICON` → `.ico`），程序库像游戏库一样一目了然；也可用 `vermouth icon` 命令导出。
+- **运行库可视化安装器**：勾选 VC++、D3DX9、D3DCompiler、.NET、字体等常用组件，一键用容器同源环境调用 `winetricks`；诊断出缺失 DLL 时可直接「一键安装」。
+- **日志分级着色**：自动识别 Wine `err` / `warn` / `fixme` / `trace` 级别与调试通道，默认隐藏刷屏噪音，错误行高亮。
 - **高级 DLL 覆写与原子快照**：可视化管理 `WINEDLLOVERRIDES`（内置 `dinput8` / `vorbisfile` / `winhttp` / `version` 等 Mod 钩子预设，自动检测 DXMT `builtin` 覆写冲突），并提供带 SHA-256 完整性校验的存档/配置目录时间戳快照与安全原子回滚。
 
 ---
@@ -72,7 +107,20 @@ swift run vermouth run "MyGames" "C:\Program Files\MyGame\Game.exe"
 swift run vermouth scan "MyGames"
 swift run vermouth snapshot create "MyGames" "drive_c/users/crossover/Documents" --label "装Mod前备份"
 swift run vermouth diagnose /path/to/wine.log
+
+# 从 .exe 中提取图标
+swift run vermouth icon ~/Games/Game.exe --output Game.ico
 ```
+
+---
+
+## 参与开发（人类与 AI Agent）
+
+本项目由人类开发者与多个 AI 编码 Agent（Google Antigravity、Claude Code）协作开发：
+
+- [`AGENTS.md`](./AGENTS.md) 是所有 Agent 共享的唯一规则源，`CLAUDE.md` / `GEMINI.md` 由 `Scripts/sync-agent-docs.sh` 自动生成，CI 校验同步。
+- [`docs/HANDOFF.md`](./docs/HANDOFF.md) 是接力棒快照，[`docs/WORKLOG.md`](./docs/WORKLOG.md) 是工作日志，[`docs/LESSONS_LEARNED.md`](./docs/LESSONS_LEARNED.md) 沉淀踩坑约束。
+- Linux 云端开发：`sudo ./Scripts/setup-cloud-linux.sh` 安装 Swift 6.3.3 后即可编译、测试 Core 与 CLI。
 
 ---
 
