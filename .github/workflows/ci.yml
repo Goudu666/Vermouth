@@ -73,3 +73,22 @@ jobs:
           BUNDLED_RECIPES_OUT="$("dist/Vermouth.app/Contents/MacOS/vermouth-cli" recipes)"
           echo "$BUNDLED_RECIPES_OUT"
           echo "$BUNDLED_RECIPES_OUT" | grep -F "Built-in recipes directory:" | grep -F "Vermouth.app/Contents/Resources/Vermouth_VermouthCore.bundle"
+
+          echo "==> End-to-end CLI workflow smoke test in isolated VERMOUTH_HOME..."
+          SMOKE_HOME="$(mktemp -d)"
+          export VERMOUTH_HOME="$SMOKE_HOME"
+          CLI="dist/Vermouth.app/Contents/MacOS/vermouth-cli"
+          "$CLI" preflight --json | grep -F '"architecture"'
+          "$CLI" bottle create "SmokeBottle" --win win10 --graphics wined3d --sync msync
+          "$CLI" bottle inspect "SmokeBottle" --json | grep -F '"SmokeBottle"'
+          "$CLI" recipe apply "SmokeBottle" gtasa-pc-1.0
+          mkdir -p "$SMOKE_HOME/savegame"
+          echo "level=10" > "$SMOKE_HOME/savegame/slot1.sav"
+          SNAP_JSON="$("$CLI" snapshot create "SmokeBottle" "$SMOKE_HOME/savegame" --label "BeforeMod" --json)"
+          SNAP_ID="$(echo "$SNAP_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+          echo "corrupted" > "$SMOKE_HOME/savegame/slot1.sav"
+          "$CLI" snapshot rollback "SmokeBottle" "$SNAP_ID"
+          grep -Fx "level=10" "$SMOKE_HOME/savegame/slot1.sav"
+          echo '0024:err:module:import_dll Library vcruntime140.dll (which is needed by L"C:\\game.exe") not found' > "$SMOKE_HOME/sample.log"
+          "$CLI" diagnose "$SMOKE_HOME/sample.log" --json | grep -F "vcrun2022"
+          rm -rf "$SMOKE_HOME"
