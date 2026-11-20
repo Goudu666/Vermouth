@@ -133,7 +133,8 @@ Vermouth/
 │   │   │   ├── PEIconExtractor.swift         # Clean-Room RT_GROUP_ICON/RT_ICON 解析并重建 .ico
 │   │   │   └── ProgramIconCache.swift        # 图标磁盘缓存（键 = 路径 + 大小 + mtime 的 SHA-256）
 │   │   ├── Engines/
-│   │   │   └── EngineManager.swift
+│   │   │   ├── EngineManager.swift
+│   │   │   └── EnvironmentSetupPlanner.swift # 预检 → 白话准备步骤 + 一条终端脚本（普通模式）
 │   │   ├── Bottles/
 │   │   │   ├── BottleStore.swift             # CRUD、克隆、外部 prefix 安全隔离、原子持久化
 │   │   │   └── RegistryPatcher.swift         # UTF-16LE BOM .reg 生成（Win版本/DPI/虚拟桌面/CJK字体/恢复删除）
@@ -146,10 +147,12 @@ Vermouth/
 │   │   │   ├── TranslationPipeline.swift     # 转译链路模型（程序架构 → Rosetta → Wine → 图形层 → Metal）
 │   │   │   └── Winetricks.swift              # 运行库目录与 winetricks LaunchPlan 生成（verb 白名单校验）
 │   │   ├── Discovery/
-│   │   │   └── ExecutableScanner.swift       # .lnk + Program Files 扫描与噪点过滤
+│   │   │   ├── ExecutableScanner.swift       # .lnk + Program Files 扫描与噪点过滤
+│   │   │   └── ProgramFileClassifier.swift   # 拖入文件识别（安装包 / 免安装）、显示名、安装后自动收录
 │   │   ├── Diagnostics/
 │   │   │   ├── CrashDiagnoser.swift          # 规则化崩溃诊断 + DiagnosticQuickFix 建议
-│   │   │   └── WineLogClassifier.swift       # err/warn/fixme/trace 级别与通道识别（含 MoltenVK 日志）
+│   │   │   ├── WineLogClassifier.swift       # err/warn/fixme/trace 级别与通道识别（含 MoltenVK 日志）
+│   │   │   └── LaunchOutcome.swift           # 运行结束后是否需要提醒用户（问题助手）
 │   │   ├── Snapshots/
 │   │   │   └── SnapshotManager.swift         # SHA-256 校验、防路径穿越、原子替换安全回滚
 │   │   ├── Recipes/
@@ -162,8 +165,12 @@ Vermouth/
 │   │   ├── CLICommands.swift
 │   │   └── CLIIconCommand.swift              # vermouth icon：导出 .exe 图标
 │   └── VermouthApp/                          # #if os(macOS) 原生 SwiftUI + AppKit 界面
-│       ├── VermouthApp.swift
+│       ├── VermouthApp.swift                 # RootView：普通模式（程序库）/ 高级模式（容器工作台）切换
 │       ├── AppViewModel.swift
+│       ├── AppViewModel+Library.swift        # 程序库、默认环境、一键启动、环境准备
+│       ├── LibraryView.swift                 # 普通模式主界面与程序卡片
+│       ├── ProgramDetailSheet.swift          # 程序详情、问题助手、已安装程序浏览
+│       ├── EnvironmentSetupView.swift        # 一键准备运行环境
 │       ├── PreflightSheet.swift
 │       ├── BottleDetailView.swift
 │       ├── BottleConfigView.swift

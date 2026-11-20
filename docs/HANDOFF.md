@@ -8,9 +8,9 @@
 baton_holder: claude             # 当前持棒者：antigravity | claude。只有持棒者可以推送主开发分支
 next_holder: antigravity         # 需要 Mac 真机验证时交还 Antigravity（或由用户本人验证）
 main_dev_branch: claude/project-thread-wsp3r9   # 基于 feat/v0.1-mvp 继续开发，经 PR #1 合入 main
-last_known_commit: 6e8ed7d       # 最后一个代码提交（运行库安装器）；其后只有文档提交
-last_ci_run: 44714569487         # macos-15 ✅ + core-linux ✅ + agent-docs ✅
-updated_at: 2026-11-20T10:20Z
+last_known_commit: a345425       # feat(app): 普通模式程序库；其后只有文档提交
+last_ci_run: 44742704213         # macos-15 ✅ + core-linux ✅ + agent-docs ✅ + package ✅（run 44742704364）
+updated_at: 2026-11-20T13:25Z
 updated_by: claude
 ```
 
@@ -22,6 +22,7 @@ updated_by: claude
 - 已完成 M2 第一批界面：App 图标与品牌色板、`.exe` 真实图标卡片墙（Clean-Room `PEIconExtractor` + 磁盘缓存）、转译链路可视化、彩色日志与级别筛选、三步引导。
 - 已提前完成 M3 运行库安装器（winetricks 卡片 + 诊断卡片一键安装），README 门面已更新。
 - 新增 `.github/workflows/package.yml`：PR 上传 `Vermouth-macos-arm64.zip` artifact，合并 main 后滚动发布 `nightly` 预发布，`v*` 标签发正式 Release；README 有「下载安装」与 Gatekeeper 放行说明。
+- **默认界面改为普通模式「程序库」**（用户反馈技术细节露太多）：`LibraryView` 封面墙 + 双击启动；拖入文件按名称判断安装包 / 免安装（`ProgramFileClassifier`），装进自动创建的默认环境「我的 Windows」，装完自动收录（`InstalledProgramAdopter`）；`EnvironmentSetupPlanner` 把预检变成一键终端脚本；运行结束由 `LaunchOutcomeEvaluator` 决定是否弹问题助手。原工作台 = 高级模式（`@AppStorage("vermouth.advancedMode")`，⇧⌘A）。
 - **所有 UI 只在 macOS CI 上编译通过，还没有人在真机上看过观感。**
 
 ## 2. 下一步（按优先级）
@@ -29,7 +30,7 @@ updated_by: claude
 | # | 任务 | 说明 | 建议执行者 |
 |---|---|---|---|
 | P0 | 真机冒烟（PRD §7） | `./Scripts/bundle-app.sh --configuration debug --output dist` 后双击 `dist/Vermouth.app`：建容器 → 装 `.exe` → 看实时日志与卡片图标 → 触发一次诊断卡片 | 用户 / Antigravity（需要 Mac） |
-| P0 | 界面观感确认 | 截图回传，按 `docs/UI_PROPOSALS.md` 1–5 逐项改 ✅ 或记录问题 | 同上 |
+| P0 | 界面观感确认 | 截图回传，按 `docs/UI_PROPOSALS.md` 第 1、1.5 批逐项改 ✅ 或记录问题；重点看程序库卡片、拖入确认框、一键准备环境 | 同上 |
 | P1 | README 真机截图 / GIF | 截图放 `Branding/screenshots/`，替换 README 里的链路图占位 | 任一 |
 | P1 | 一键导出 `.app` 快捷方式 | ROADMAP M3，Dock / Launchpad 直开 | Claude |
 | P2 | 黑屏检测 / 图形后端 A/B 对比 | ROADMAP 创意储备池 #1 / #3，作品集亮点 | Claude |
@@ -38,8 +39,9 @@ updated_by: claude
 ## 3. 已知问题
 
 1. **UI 观感未验证**：云端无法渲染 SwiftUI，卡片墙间距、转译链路在窄窗口下的横向滚动、深色模式下的品牌色对比度都可能需要微调。
-2. **运行库安装进度只有日志**：winetricks 没有结构化进度输出，目前在控制台看日志；逐项进度需解析其输出，未做。
-3. **Linux 专属**：`LiveHTTPFetcher` 下载测试在 Linux 上以 SIGILL 崩溃（FoundationNetworking 差异），已 `XCTSkipIf`；取消子进程在 Linux 上改发 SIGKILL（L-018）。产品只面向 macOS。
+2. **同一时间只能运行一个程序**：`AppViewModel` 只有一个会话；普通模式下启动第二个会提示先停止第一个。多会话需要把 `activeSessionTask` 改成按程序字典。
+3. **运行库安装进度只有日志**：winetricks 没有结构化进度输出，目前在控制台看日志；逐项进度需解析其输出，未做。
+4. **Linux 专属**：`LiveHTTPFetcher` 下载测试在 Linux 上以 SIGILL 崩溃（FoundationNetworking 差异），已 `XCTSkipIf`；取消子进程在 Linux 上改发 SIGKILL（L-018）。产品只面向 macOS。
 
 ## 4. 给下一个 Agent 的提醒
 

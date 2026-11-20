@@ -7,6 +7,7 @@
 
 v0.1 MVP 代码全部落地，**CI 三项全绿**（macOS 完整编译 + 测试 + 打包、Linux Core 快检、Agent 文档同步）；
 在此基础上已完成 M2 第一批界面打磨（品牌图标、`.exe` 真实图标卡片墙、转译链路、日志着色、三步引导）和 M3 的运行库安装器。
+2026-11-20 起默认界面改为**普通模式「程序库」**：拖入 `.exe` 即添加，双击即启动，环境一键准备；原容器工作台保留为高级模式（⇧⌘A）。
 距离「可以发给别人用」还差：**真机跑通一条 32 位 DX9 和一条 DXMT 链路**，以及在 Mac 上肉眼确认界面观感。
 
 ## 2. PRD v0.1 模块完成度
@@ -21,19 +22,20 @@ v0.1 MVP 代码全部落地，**CI 三项全绿**（macOS 完整编译 + 测试 
 | F 高级覆写与快照 | `Runner/DllOverrideFormatter`、`Snapshots/SnapshotManager` | ✅ 可视化 DLL Override + Mod 预设、SHA-256 原子快照回滚 | ✅ | ⏳ |
 | 原生界面 | `Sources/VermouthApp/*`（12 个文件） | ✅ NavigationSplitView + 4 个分区 + 预检/引擎/快照弹窗；品牌色板、程序卡片墙、转译链路、彩色日志、三步引导 | 无（UI），macOS CI 编译通过 | ⏳ 观感待确认 |
 | 程序图标（新增） | `Inspection/PEIconExtractor`、`Inspection/ProgramIconCache` | ✅ Clean-Room 解析 `RT_GROUP_ICON` → 重建 `.ico`，按路径+大小+mtime 磁盘缓存；`vermouth icon` | ✅ 10 个 | ⏳ |
+| 普通模式（程序库） | `App/LibraryView`、`App/ProgramDetailSheet`、`App/EnvironmentSetupView`、`Engines/EnvironmentSetupPlanner`、`Discovery/ProgramFileClassifier`、`Diagnostics/LaunchOutcome` | ✅ 拖入即添加、自动默认环境、一键准备环境、问题助手 | ✅ 23 个 | ⏳ 观感待确认 |
 | 运行库安装器（M3 提前） | `Runner/Winetricks`、`App/RuntimeInstallerSheet` | ✅ 19 个常用 verb 分类卡片、推荐预设、命令预览，经 `LaunchPlan` 执行（L-003） | ✅ | ⏳ |
 | CLI | `Sources/VermouthCLI/*` | ✅ preflight / engine / bottle / graphics / run / scan / diagnose / snapshot / recipe / icon | 由 CI 冒烟覆盖 | ✅ Linux 冒烟通过 |
 | 打包 | `Scripts/bundle-app.sh` | ✅ 无 Xcode 打包 + ad-hoc 签名 + App 图标（`Branding/AppIcon.icns`） | CI 校验图标存在 | ⏳ |
 
-规模：源码约 20,500 行，测试约 8,400 行、169 个测试用例。零第三方依赖。
+规模：源码约 22,500 行，测试约 8,700 行、192 个测试用例。零第三方依赖。
 
 ## 3. 测试与 CI
 
 | 环境 | 结果 | 说明 |
 |---|---|---|
-| GitHub Actions `macos-15` arm64（run 44714569487，提交 `6e8ed7d`） | ✅ | 完整编译 Core / CLI / App、全部测试、`bundle-app.sh` 打包与冒烟 |
+| GitHub Actions `macos-15` arm64（提交 `a345425`） | ✅ | 完整编译 Core / CLI / App、全部测试、`bundle-app.sh` 打包与冒烟 |
 | GitHub Actions `core-linux`（同一 run） | ✅ | `swift:6.3.3-noble` 容器，Core + CLI 编译、测试、CLI 冒烟，约 1 分钟 |
-| Linux x86_64 云端，Swift 6.3.3 | ✅ 169/169 | 仅 Linux 不成立的 1 个 HTTP 下载测试用 `XCTSkipIf` 标注（L-018） |
+| Linux x86_64 云端，Swift 6.3.3 | ✅ 191/192（1 个按平台跳过） | 仅 Linux 不成立的 1 个 HTTP 下载测试用 `XCTSkipIf` 标注（L-018） |
 | 真机 Wine 冒烟（PRD §7） | ⏳ | 需要用户的 Mac |
 
 ## 4. 质量亮点（值得在 README / 简历里讲的）
