@@ -36,6 +36,10 @@ public final class CrashDiagnoser: CrashDiagnosing, Sendable {
     public func diagnoseLine(_ line: String) -> [DiagnosticFinding] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
+        // 已知无害的报错（如 Steam 可选探测工具缺 SDL2.dll）不生成诊断
+        if KnownBenignLogLines.match(trimmed) != nil {
+            return []
+        }
 
         var matches: [DiagnosticFinding] = []
 
@@ -51,7 +55,9 @@ public final class CrashDiagnoser: CrashDiagnosing, Sendable {
         if let finding = matchArchitectureMismatch(trimmed) {
             matches.append(finding)
         }
-        if let finding = matchGraphicsInitFailed(trimmed) {
+        if let finding = matchDXVKAdapterMismatch(trimmed) {
+            matches.append(finding)
+        } else if let finding = matchGraphicsInitFailed(trimmed) {
             matches.append(finding)
         }
         if let finding = matchSyncMismatch(trimmed) {
@@ -215,6 +221,23 @@ public final class CrashDiagnoser: CrashDiagnosing, Sendable {
             title: "DirectX / Metal / Vulkan 图形转译层初始化失败",
             explanation: "图形后端（DXMT、DXVK-macOS 或 WineD3D）未能成功初始化渲染设备，可能因为图形包与引擎不匹配、缺少 Vulkan/Metal 扩展或旧版 DX9 程序误选 DXMT/DXVK。",
             suggestion: "建议先一键切换回内置 `WineD3D` 验证程序能否启动，或确认 DXMT builtin 包已搭配支持 `WINEDLLPATH_PREPEND` 的 Wine 引擎且未设置冲突的 `=n,b` DLL 覆写。",
+            matchedLine: line,
+            quickFix: .switchGraphicsBackend(.wined3d)
+        )
+    }
+
+    // MARK: - Rule 4b: DXVK d3d11 Running on Wine's Builtin dxgi
+
+    private func matchDXVKAdapterMismatch(_ line: String) -> DiagnosticFinding? {
+        guard matches(line, pattern: #"(?i)Adapter is not a DXVK adapter"#) else { return nil }
+
+        return DiagnosticFinding(
+            id: "dxvk-adapter-mismatch",
+            category: .graphicsInitFailed,
+            severity: .error,
+            title: "DXVK 的 d3d11 与 Wine 内置 dxgi 混用",
+            explanation: "DXVK 的 d3d11 只能使用 DXVK 自己的 dxgi 适配器。当前容器部署的 DXVK 包不含 dxgi.dll（如 Gcenx 的 -repack 包），实际加载的是 Wine 内置 dxgi，D3D11 设备创建失败。",
+            suggestion: "请改用包含 dxgi.dll 的 DXVK 包，或切换回 WineD3D。",
             matchedLine: line,
             quickFix: .switchGraphicsBackend(.wined3d)
         )

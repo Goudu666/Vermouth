@@ -58,6 +58,10 @@ public enum WineLogClassifier: Sendable {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
 
         if let parsed = parseWineDebugLine(trimmed) {
+            // 已知无害的 err 行降为 info，控制台不再标红
+            if parsed.level == .error, KnownBenignLogLines.match(trimmed) != nil {
+                return WineLogClassification(level: .info, channel: parsed.channel, message: parsed.message)
+            }
             return parsed
         }
 
