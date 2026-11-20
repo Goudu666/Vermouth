@@ -107,6 +107,13 @@ struct BottleDetailView: View {
                     Label("兼容配方", systemImage: "wand.and.stars")
                 }
 
+                Button {
+                    viewModel.openRuntimeInstaller()
+                } label: {
+                    Label("运行库", systemImage: "puzzlepiece.extension")
+                }
+                .help("用 winetricks 安装 VC++、DirectX、.NET 与字体等常见组件")
+
                 Spacer()
 
                 Button {

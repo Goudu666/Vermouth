@@ -291,6 +291,9 @@ struct ConsoleLogView: View {
                         },
                         onDismiss: {
                             viewModel.dismissDiagnosticFinding(id: finding.id)
+                        },
+                        onInstallRuntime: { verb in
+                            viewModel.openRuntimeInstaller(preselecting: [verb])
                         }
                     )
                 }

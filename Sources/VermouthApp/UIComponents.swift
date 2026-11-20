@@ -397,6 +397,15 @@ struct DiagnosticFindingCard: View {
     let finding: DiagnosticFinding
     let onQuickFix: (DiagnosticQuickFix) -> Void
     var onDismiss: (() -> Void)? = nil
+    /// 提供时，若诊断建议安装某个 winetricks 运行库，额外显示「一键安装」按钮。
+    var onInstallRuntime: ((String) -> Void)? = nil
+
+    private var winetricksVerb: String? {
+        guard case let .copyCommand(_, command)? = finding.quickFix, command.hasPrefix("winetricks") else {
+            return nil
+        }
+        return command.split(separator: " ").last.map(String.init)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -454,6 +463,15 @@ struct DiagnosticFindingCard: View {
                     .controlSize(.small)
                     .buttonStyle(.borderedProminent)
                     .tint(finding.severity == .error ? .red : .accentColor)
+
+                    if let verb = winetricksVerb, let onInstallRuntime {
+                        Button {
+                            onInstallRuntime(verb)
+                        } label: {
+                            Label("一键安装 \(verb)", systemImage: "puzzlepiece.extension")
+                        }
+                        .controlSize(.small)
+                    }
                     Spacer()
                 }
                 .padding(.top, 2)

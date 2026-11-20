@@ -54,6 +54,10 @@ public enum VermouthError: Error, LocalizedError, Equatable, Sendable {
     case recipeNotFound(identifier: String)
     case invalidRecipe(path: String?, reason: String)
 
+    // MARK: - Runtimes (winetricks)
+    case winetricksNotInstalled
+    case invalidWinetricksVerb(String)
+
     public var errorDescription: String? {
         switch self {
         case let .ioError(operation, path, underlyingDescription):
@@ -147,6 +151,10 @@ public enum VermouthError: Error, LocalizedError, Equatable, Sendable {
 
         case let .recipeNotFound(identifier):
             return "未找到指定的兼容配方 (\(identifier))"
+        case .winetricksNotInstalled:
+            return "未检测到 winetricks，请先执行 brew install winetricks"
+        case let .invalidWinetricksVerb(verb):
+            return "无效的 winetricks 组件名：\(verb)（只允许小写字母、数字、下划线与 = 号）"
         case let .invalidRecipe(path, reason):
             if let path {
                 return "无效的兼容配方文件 [\(path)]: \(reason)"

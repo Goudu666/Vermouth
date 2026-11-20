@@ -124,6 +124,9 @@ final class AppViewModel {
     var isShowingCreateBottleSheet: Bool = false
     var createBottleInitialMode: CreateBottleMode = .createNew
     var isShowingSnapshotSheet: Bool = false
+    var isShowingRuntimeInstaller: Bool = false
+    /// 打开运行库安装器时预先勾选的组件（如从诊断卡片跳转时带入缺失的运行库）。
+    var runtimeInstallerPreselection: Set<String> = []
 
     // MARK: - Domain State
 
@@ -694,6 +697,41 @@ final class AppViewModel {
             .builtinTool(tool, extraArguments: []),
             in: bottle,
             rescanAfterExit: tool == .cmd
+        )
+    }
+
+    // MARK: - Runtime Installer (winetricks, PRD §4.2)
+
+    var winetricksPath: String? {
+        preflightReport?.winetricksPath
+    }
+
+    func openRuntimeInstaller(preselecting verbs: [String] = []) {
+        runtimeInstallerPreselection = Set(verbs.isEmpty ? WinetricksCatalog.recommendedIDs : verbs)
+        isShowingRuntimeInstaller = true
+    }
+
+    /// 用容器同源环境（L-003）运行 `winetricks -q <verbs>`，输出实时流入控制台。
+    func installRuntimes(_ verbs: [String], in bottle: Bottle) async {
+        guard let winetricksPath else {
+            presentError(VermouthError.winetricksNotInstalled)
+            return
+        }
+        selectedTab = .console
+        appendLogLine(
+            LogLine(
+                timestamp: VermouthJSON.currentTimestamp(),
+                stream: .system,
+                text: "通过 winetricks 安装运行库：\(verbs.joined(separator: " "))（首次下载可能较慢）"
+            )
+        )
+        await executeLaunchTarget(
+            .builtinTool(.winecfg, extraArguments: []),
+            in: bottle,
+            rescanAfterExit: false,
+            transformPlan: { base in
+                try WinetricksPlanner.makePlan(basedOn: base, winetricksPath: winetricksPath, verbs: verbs)
+            }
         )
     }
 
@@ -1532,7 +1570,8 @@ final class AppViewModel {
         in bottle: Bottle,
         extraArgs: [String] = [],
         debugChannelsOverride: String? = nil,
-        rescanAfterExit: Bool
+        rescanAfterExit: Bool,
+        transformPlan: ((LaunchPlan) throws -> LaunchPlan)? = nil
     ) async {
         guard let engine = resolvedEngine(for: bottle) else {
             isShowingPreflightSheet = true
@@ -1558,7 +1597,7 @@ final class AppViewModel {
 
             try await wineRunner.ensurePrefixInitialized(bottle: bottle, engine: engine)
 
-            let plan = try await wineRunner.buildLaunchPlan(
+            let basePlan = try await wineRunner.buildLaunchPlan(
                 bottle: bottle,
                 engine: engine,
                 target: target,
@@ -1566,6 +1605,7 @@ final class AppViewModel {
                 extraArgs: extraArgs,
                 debugChannelsOverride: debugChannelsOverride
             )
+            let plan = try transformPlan?(basePlan) ?? basePlan
 
             currentLaunchPlan = plan
             previewLaunchPlan = plan

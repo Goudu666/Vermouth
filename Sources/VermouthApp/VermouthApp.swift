@@ -117,6 +117,11 @@ struct MainWorkspaceView: View {
         .sheet(isPresented: $viewModel.isShowingSnapshotSheet) {
             SnapshotSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingRuntimeInstaller) {
+            if let bottle = viewModel.selectedBottle {
+                RuntimeInstallerSheet(viewModel: viewModel, bottle: bottle)
+            }
+        }
         .sheet(item: $bottleToRename) { bottle in
             BottleNamePromptSheet(
                 title: "重命名容器",

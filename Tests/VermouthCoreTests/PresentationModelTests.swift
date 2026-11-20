@@ -93,3 +93,92 @@ final class PresentationModelTests: XCTestCase {
         XCTAssertEqual(arm[1].title, "Wine")
     }
 }
+
+/// winetricks 运行库安装：目录完整性与安装计划生成。
+final class WinetricksTests: XCTestCase {
+    private func basePlan() -> LaunchPlan {
+        let engine = WineEngine(
+            id: "wine-stable",
+            name: "Wine Stable",
+            rootPath: "/opt/wine",
+            wineBinaryPath: "/opt/wine/bin/wine",
+            wineserverPath: "/opt/wine/bin/wineserver",
+            version: "wine-11.0",
+            source: .custom,
+            capabilities: EngineCapabilities(
+                supports32Bit: true,
+                supports64Bit: true,
+                isNewWoW64: true,
+                supportsMSync: true,
+                supportsWineDLLPathPrepend: true
+            )
+        )
+        return LaunchPlan(
+            bottleID: UUID(),
+            engine: engine,
+            executablePath: "/opt/wine/bin/wine",
+            arguments: ["winecfg"],
+            workingDirectory: "/tmp/prefix/drive_c",
+            environment: ["WINEPREFIX": "/tmp/prefix", "WINEMSYNC": "1"],
+            logFilePath: "/tmp/logs/20261120-winecfg.log",
+            shellCommandPreview: "wine winecfg"
+        )
+    }
+
+    func testPlanReusesBottleEnvironmentAndPinsEngine() throws {
+        let plan = try WinetricksPlanner.makePlan(
+            basedOn: basePlan(),
+            winetricksPath: "/opt/homebrew/bin/winetricks",
+            verbs: ["vcrun2022", " D3DX9 ", "vcrun2022"]
+        )
+        XCTAssertEqual(plan.executablePath, "/opt/homebrew/bin/winetricks")
+        XCTAssertEqual(plan.arguments, ["-q", "vcrun2022", "d3dx9"], "Verbs must be normalized, de-duplicated and order-preserving")
+        XCTAssertEqual(plan.environment["WINEPREFIX"], "/tmp/prefix")
+        XCTAssertEqual(plan.environment["WINEMSYNC"], "1", "Sync mode must match the bottle (L-003)")
+        XCTAssertEqual(plan.environment["WINE"], "/opt/wine/bin/wine")
+        XCTAssertEqual(plan.environment["WINESERVER"], "/opt/wine/bin/wineserver")
+        XCTAssertEqual(plan.logFilePath, "/tmp/logs/20261120-winecfg-winetricks.log")
+        XCTAssertTrue(plan.shellCommandPreview.contains("/opt/homebrew/bin/winetricks"))
+        XCTAssertTrue(plan.shellCommandPreview.hasSuffix("-q vcrun2022 d3dx9"))
+    }
+
+    func testRejectsInjectionAndEmptyInput() {
+        for bad in ["--force", "vcrun2022; rm -rf ~", "$(whoami)", "=x", "a b", "中文"] {
+            XCTAssertThrowsError(try WinetricksPlanner.normalize([bad]), "Should reject \(bad)") { error in
+                guard case VermouthError.invalidWinetricksVerb = error else {
+                    return XCTFail("Unexpected error \(error)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try WinetricksPlanner.normalize([]))
+        XCTAssertNoThrow(try WinetricksPlanner.normalize(["fontsmooth=rgb"]))
+        XCTAssertThrowsError(try WinetricksPlanner.makePlan(basedOn: basePlan(), winetricksPath: "  ", verbs: ["d3dx9"])) { error in
+            guard case VermouthError.winetricksNotInstalled = error else {
+                return XCTFail("Unexpected error \(error)")
+            }
+        }
+    }
+
+    func testCatalogIsValidAndCoversEveryRuntimeTheDiagnoserSuggests() throws {
+        let ids = WinetricksCatalog.verbs.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "Catalog ids must be unique")
+        XCTAssertEqual(try WinetricksPlanner.normalize(ids), ids, "Every catalog id must pass validation")
+        XCTAssertFalse(WinetricksCatalog.recommendedIDs.isEmpty)
+
+        // Every runtime that CrashDiagnoser can recommend must be one click away in the installer.
+        let diagnoser = CrashDiagnoser()
+        var checkedVerbs: Set<String> = []
+        let missingDLLs = ["vcruntime140.dll", "msvcp140.dll", "msvcr120.dll", "msvcr110.dll", "msvcr100.dll",
+                           "d3dx9_43.dll", "d3dcompiler_47.dll", "d3dcompiler_43.dll", "mfplat.dll", "mscoree.dll"]
+        for dll in missingDLLs {
+            let line = "0024:err:module:import_dll Library \(dll) (which is needed by L\"C:\\\\game.exe\") not found"
+            for finding in diagnoser.diagnoseLine(line) {
+                guard case let .copyCommand(_, command)? = finding.quickFix, command.hasPrefix("winetricks") else { continue }
+                let verb = command.split(separator: " ").last.map(String.init) ?? ""
+                XCTAssertNotNil(WinetricksCatalog.verb(id: verb), "\(dll) → \(verb) missing from WinetricksCatalog")
+                checkedVerbs.insert(verb)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(checkedVerbs.count, 5, "Expected the diagnoser to map several DLLs to winetricks verbs: \(checkedVerbs)")
+    }
+}
