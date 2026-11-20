@@ -373,7 +373,8 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
                 return (newRecord, warnings, now)
             }
 
-        var updatedBottle = bottle
+        // 只改图形字段：落盘前从磁盘重读 bottle，避免调用方持有的旧副本覆盖 CLI / 其他进程刚写入的修改
+        var updatedBottle = try bottleStore?.loadBottle(id: bottle.id) ?? bottle
         updatedBottle.config.graphicsBackend = backend
         updatedBottle.config.graphicsLayerVersionID = targetPackage?.id
         updatedBottle.updatedAt = applyOutcome.now

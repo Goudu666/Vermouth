@@ -293,6 +293,16 @@ final class AppViewModel {
         }
     }
 
+    /// CLI 或手动编辑会直接改磁盘上的 bottle.json / graphics/index.json，App 收不到通知。
+    /// 回到前台时重载一次即可覆盖「去终端改完再切回来」的用法；启动程序时另有一次重读（见 `executeLaunchTarget`），
+    /// 所以不需要常驻的目录监听。
+    func reloadPersistentStateFromDisk() {
+        guard hasBootstrapped else { return }
+        reloadBottlesFromDisk()
+        reloadInstalledGraphicsPackages()
+        schedulePreviewLaunchPlanRefresh()
+    }
+
     func handleSelectedBottleChanged() async {
         discoveredExecutables = []
         previewLaunchPlan = nil
@@ -1567,12 +1577,27 @@ final class AppViewModel {
 
     private func executeLaunchTarget(
         _ target: LaunchTarget,
-        in bottle: Bottle,
+        in staleBottle: Bottle,
         extraArgs: [String] = [],
         debugChannelsOverride: String? = nil,
         rescanAfterExit: Bool,
         transformPlan: ((LaunchPlan) throws -> LaunchPlan)? = nil
     ) async {
+        // 启动前以磁盘为准：`vermouth graphics set`、手动改 bottle.json 或 CLI 装的新图形包 / 引擎
+        // 都不会通知 App，用内存副本启动会带着旧图形包或旧引擎跑起来
+        let bottle: Bottle
+        do {
+            bottle = try bottleStore.loadBottle(id: staleBottle.id)
+            reloadBottlesFromDisk(preferredSelection: selectedBottleID)
+            reloadInstalledGraphicsPackages()
+            if let engineID = bottle.config.engineID, !engines.contains(where: { $0.id == engineID }) {
+                engines = try await engineManager.listEngines()
+            }
+        } catch {
+            presentError(error)
+            return
+        }
+
         guard let engine = resolvedEngine(for: bottle) else {
             isShowingPreflightSheet = true
             presentError(VermouthError.noEngineAvailable)

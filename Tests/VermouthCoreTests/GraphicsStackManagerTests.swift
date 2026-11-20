@@ -732,6 +732,35 @@ final class GraphicsStackManagerTests: XCTestCase {
         XCTAssertTrue(result.warnings.isEmpty)
     }
 
+    func testApplyBackendRereadsBottleFromDiskInsteadOfOverwritingWithStaleCopy() async throws {
+        // App 持有旧 bottle 副本，期间 CLI 改了 bottle.json；切换图形后端不得把 CLI 的改动写回旧值
+        let bottleStore = BottleStore(paths: paths)
+        let staleCopy = try bottleStore.createBottle(name: "Steam", engineID: "test-wine-11", initialConfig: nil)
+
+        var editedElsewhere = try bottleStore.loadBottle(id: staleCopy.id)
+        editedElsewhere.config.dllOverrides = [DllOverride(dllName: "dinput8", mode: .nativeThenBuiltin, enabled: true)]
+        editedElsewhere.config.syncMode = .esync
+        try bottleStore.saveBottle(editedElsewhere)
+
+        let manager = GraphicsStackManager(
+            paths: paths,
+            commandRunner: MockCommandRunner(
+                defaultResult: CommandResult(exitCode: 1, stdout: "", stderr: "wineserver: no server running\n")
+            ),
+            httpFetcher: MockHTTPFetcher(),
+            bottleStore: bottleStore
+        )
+        let result = try await manager.applyBackend(
+            .wined3d, packageID: nil, to: staleCopy, engine: makeEngine(supportsWineDLLPathPrepend: true)
+        )
+
+        let onDisk = try bottleStore.loadBottle(id: staleCopy.id)
+        XCTAssertEqual(onDisk, result.bottle)
+        XCTAssertEqual(onDisk.config.dllOverrides.map(\.dllName), ["dinput8"])
+        XCTAssertEqual(onDisk.config.syncMode, .esync)
+        XCTAssertEqual(onDisk.config.graphicsBackend, .wined3d)
+    }
+
     // MARK: - Package Removal Protection
 
     func testRemovePackageRefusesWhenInUseAndSucceedsAfterSwitchToWineD3D() async throws {

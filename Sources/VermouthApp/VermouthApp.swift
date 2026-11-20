@@ -100,6 +100,9 @@ struct MainWorkspaceView: View {
         .task {
             await viewModel.bootstrap()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            viewModel.reloadPersistentStateFromDisk()
+        }
         .onChange(of: viewModel.selectedBottleID) { _, _ in
             Task {
                 await viewModel.handleSelectedBottleChanged()
