@@ -112,6 +112,49 @@ final class PEIconExtractorTests: XCTestCase {
         XCTAssertThrowsError(try PEIconExtractor.extractIcon(fileAtPath: tempDir.appendingPathComponent("missing.exe").path))
     }
 
+    // MARK: - ProgramIconCache
+
+    func testProgramIconCachePersistsIcoAndInvalidatesOnFileChange() throws {
+        let paths = VermouthPaths(baseDirectory: tempDir.appendingPathComponent("home"))
+        let cache = ProgramIconCache(paths: paths)
+        let exeURL = tempDir.appendingPathComponent("Game.exe")
+        try makePE(pe32Plus: false, icons: [(1, dibPayload)], group: [(16, 16, 32, 1)]).write(to: exeURL)
+
+        let first = try XCTUnwrap(cache.icoData(forExecutableAt: exeURL.path))
+        let cachedFiles = try FileManager.default.contentsOfDirectory(atPath: paths.iconCacheDirectory.path)
+        XCTAssertEqual(cachedFiles.count, 1)
+        XCTAssertTrue(cachedFiles[0].hasSuffix(".ico"))
+
+        // A fresh cache instance must serve the same bytes from disk.
+        XCTAssertEqual(ProgramIconCache(paths: paths).icoData(forExecutableAt: exeURL.path), first)
+
+        // Replacing the executable (different size) produces a new cache key and a new icon.
+        try makePE(pe32Plus: false, icons: [(1, pngPayload)], group: [(0, 0, 32, 1)]).write(to: exeURL)
+        let second = try XCTUnwrap(cache.icoData(forExecutableAt: exeURL.path))
+        XCTAssertNotEqual(first, second)
+
+        try cache.purge()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.iconCacheDirectory.path))
+    }
+
+    func testProgramIconCacheReturnsNilForMissingOrIconlessFiles() throws {
+        let cache = ProgramIconCache(paths: VermouthPaths(baseDirectory: tempDir))
+        XCTAssertNil(cache.icoData(forExecutableAt: tempDir.appendingPathComponent("nope.exe").path))
+        let textURL = tempDir.appendingPathComponent("readme.exe")
+        try Data("not a PE".utf8).write(to: textURL)
+        XCTAssertNil(cache.icoData(forExecutableAt: textURL.path))
+        XCTAssertNil(cache.icoData(forExecutableAt: textURL.path), "Negative result must be remembered without crashing")
+    }
+
+    func testResolveHostPathMatchesLaunchRules() {
+        XCTAssertEqual(
+            ProgramIconCache.resolveHostPath("drive_c/Games/a.exe", prefixPath: "/tmp/prefix"),
+            "/tmp/prefix/drive_c/Games/a.exe"
+        )
+        XCTAssertEqual(ProgramIconCache.resolveHostPath("  /opt/x/../b.exe ", prefixPath: "/tmp/prefix"), "/opt/b.exe")
+        XCTAssertTrue(ProgramIconCache.resolveHostPath("~/g.exe", prefixPath: "/p").hasSuffix("/g.exe"))
+    }
+
     // MARK: - Synthetic PE Builder
 
     private struct Layout {

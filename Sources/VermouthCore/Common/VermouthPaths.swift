@@ -98,6 +98,16 @@ public struct VermouthPaths: Sendable, Equatable {
         bottleDirectory(id: id).appendingPathComponent("logs", isDirectory: true)
     }
 
+    /// 可随时删除重建的派生数据缓存（如程序图标），不参与备份与快照。
+    public var cacheDirectory: URL {
+        baseDirectory.appendingPathComponent("cache", isDirectory: true)
+    }
+
+    /// 从 `.exe` 提取出的 `.ico` 图标缓存目录。
+    public var iconCacheDirectory: URL {
+        cacheDirectory.appendingPathComponent("icons", isDirectory: true)
+    }
+
     // MARK: - Directory Provisioning
 
     public func ensureBaseDirectories() throws {
