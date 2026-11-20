@@ -297,6 +297,12 @@ public struct EnvironmentBuilder: Sendable {
             }
         }
 
+        if bottle.config.graphicsBackend != .wined3d,
+           let missingDXGI = graphicsPackage?.missingDXGIWarning
+        {
+            warnings.append(missingDXGI)
+        }
+
         // 7. WINEDLLOVERRIDES（L-001 / L-002 / L-011）
         let overrideResolution = DllOverrideFormatter.resolve(
             graphicsBackend: bottle.config.graphicsBackend,

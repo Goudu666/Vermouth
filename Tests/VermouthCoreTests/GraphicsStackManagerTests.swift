@@ -146,11 +146,103 @@ final class GraphicsStackManagerTests: XCTestCase {
 
         let dxvkBuiltin = try XCTUnwrap(dxvkReleases.first(where: { $0.format == .wineBuiltin }))
         XCTAssertEqual(dxvkBuiltin.assetName, "dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz")
-        XCTAssertEqual(dxvkBuiltin.version, "v1.10.3-20230507-repack")
+        // 同一 tag 下的 builtin 资产必须得到独立版本号，否则安装时会覆盖 repack 包
+        XCTAssertEqual(dxvkBuiltin.version, "v1.10.3-20230507-repack-builtin")
+        XCTAssertEqual(dxvkBuiltin.expectedPackageID, "dxvk-v1.10.3-20230507-repack-builtin")
 
         let dxvkNative = try XCTUnwrap(dxvkReleases.first(where: { $0.format == .nativeDLLs }))
         XCTAssertEqual(dxvkNative.assetName, "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz")
+        // 主资产沿用 tag，保持已安装包 id `dxvk-v1.10.3-20230507-repack` 不变
         XCTAssertEqual(dxvkNative.version, "v1.10.3-20230507-repack")
+        XCTAssertEqual(dxvkNative.expectedPackageID, "dxvk-v1.10.3-20230507-repack")
+    }
+
+    func testReleaseAssetVersionDisambiguatesAssetsSharingOneTag() {
+        // 单资产 release：沿用 tag（DXMT 包 id 仍为 dxmt-v0.80）
+        XCTAssertEqual(
+            GraphicsStackManager.releaseAssetVersion(
+                tagName: "v0.80", assetName: "dxmt-v0.80-builtin.tar.gz", releaseHasMultipleArchives: false
+            ),
+            "v0.80"
+        )
+        XCTAssertEqual(
+            GraphicsStackManager.releaseAssetVersion(
+                tagName: "v1.10.3-20230402",
+                assetName: "dxvk-macOS-async-v1.10.3-20230402-CrossOver.tar.gz",
+                releaseHasMultipleArchives: true
+            ),
+            "v1.10.3-20230402-CrossOver"
+        )
+        XCTAssertEqual(
+            GraphicsStackManager.releaseAssetVersion(
+                tagName: "v1.10.3-20230402",
+                assetName: "dxvk-macOS-async-v1.10.3-20230402.tar.gz",
+                releaseHasMultipleArchives: true
+            ),
+            "v1.10.3-20230402"
+        )
+        XCTAssertEqual(
+            GraphicsStackManager.releaseAssetVersion(
+                tagName: "nightly", assetName: "dxvk-macos-latest.tar.xz", releaseHasMultipleArchives: true
+            ),
+            "dxvk-macos-latest"
+        )
+    }
+
+    func testRemoteReleaseIsInstalledMatchesExactAssetNotWholeTag() throws {
+        let base = "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/"
+        let repack = RemoteGraphicsRelease(
+            backend: .dxvk,
+            tagName: "v1.10.3-20230507-repack",
+            version: "v1.10.3-20230507-repack",
+            assetName: "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz",
+            downloadURL: try XCTUnwrap(URL(string: base + "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz")),
+            format: .nativeDLLs
+        )
+        let builtin = RemoteGraphicsRelease(
+            backend: .dxvk,
+            tagName: "v1.10.3-20230507-repack",
+            version: "v1.10.3-20230507-repack-builtin",
+            assetName: "dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz",
+            downloadURL: try XCTUnwrap(URL(string: base + "dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz")),
+            format: .wineBuiltin
+        )
+        // 与用户真机 index.json 中的记录一致：只装了 -repack
+        let installedRepack = GraphicsLayerPackage(
+            id: "dxvk-v1.10.3-20230507-repack",
+            backend: .dxvk,
+            version: "v1.10.3-20230507-repack",
+            format: .nativeDLLs,
+            installPath: "/tmp/dxvk/v1.10.3-20230507-repack",
+            sourceURL: repack.downloadURL.absoluteString,
+            containedDLLs: ["d3d10core", "d3d11"]
+        )
+        XCTAssertTrue(repack.isInstalled(in: [installedRepack]))
+        XCTAssertFalse(builtin.isInstalled(in: [installedRepack]))
+
+        // 本地导入的包没有来源 URL：按 id + 格式匹配
+        var locallyImported = installedRepack
+        locallyImported.sourceURL = nil
+        XCTAssertTrue(repack.isInstalled(in: [locallyImported]))
+        XCTAssertFalse(builtin.isInstalled(in: [locallyImported]))
+    }
+
+    func testDXVKPackageMissingDXGIIsFlagged() {
+        func package(_ dlls: [String], backend: GraphicsBackend = .dxvk, format: GraphicsArchiveFormat = .nativeDLLs) -> GraphicsLayerPackage {
+            GraphicsLayerPackage(
+                id: "pkg", backend: backend, version: "v1", format: format, installPath: "/tmp/pkg", containedDLLs: dlls
+            )
+        }
+        XCTAssertTrue(package(["d3d10core", "d3d11"]).isDXVKMissingDXGI)
+        XCTAssertFalse(package(["d3d10core", "d3d11", "d3d9", "dxgi"]).isDXVKMissingDXGI)
+        XCTAssertFalse(package(["d3d9"]).isDXVKMissingDXGI)
+        XCTAssertFalse(package(["d3d11", "winemetal"], backend: .dxmt).isDXVKMissingDXGI)
+
+        let warning = try? XCTUnwrap(package(["d3d10core", "d3d11"]).missingDXGIWarning)
+        XCTAssertEqual(warning?.category, .graphicsPackageIncomplete)
+        XCTAssertEqual(warning?.severity, .warning)
+        XCTAssertEqual(warning?.quickFix, .switchGraphicsBackend(.wined3d))
+        XCTAssertNil(package(["d3d11", "dxgi"]).missingDXGIWarning)
     }
 
     // MARK: - Local Archive Import & Real tar.gz Unwrapping
@@ -539,6 +631,8 @@ final class GraphicsStackManagerTests: XCTestCase {
 
         // 1. Apply DXVK nativeDLLs
         let dxvkResult = try await manager.applyBackend(.dxvk, packageID: pkg.id, to: bottle, engine: engine)
+        // 测试包只有 d3d10core/d3d11（同 Gcenx -repack），部署时必须给出缺 dxgi 的警告
+        XCTAssertEqual(dxvkResult.warnings.map(\.id), ["dxvk-package-missing-dxgi-\(pkg.id)"])
 
         XCTAssertEqual(dxvkResult.record.backend, .dxvk)
         XCTAssertEqual(dxvkResult.record.packageID, pkg.id)
@@ -608,6 +702,34 @@ final class GraphicsStackManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sys32D3D10.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: wow64D3D10.path))
         XCTAssertEqual(try manager.deploymentState(for: rollbackResult.bottle), rollbackResult.record)
+    }
+
+    func testApplyBackendNativeDLLsWithDXGIHasNoMissingDXGIWarning() async throws {
+        let archiveURL = try await createDXVKNativeTarGz(
+            archiveName: "dxvk-1.10.3-full.tar.gz",
+            wrapperDirName: "dxvk-1.10.3-full",
+            includeDXGI: true
+        )
+        let manager = GraphicsStackManager(
+            paths: paths,
+            commandRunner: LiveCommandRunner(),
+            httpFetcher: MockHTTPFetcher()
+        )
+        let pkg = try await manager.importLocalArchive(at: archiveURL.path, backend: .dxvk, version: "1.10.3-full")
+        XCTAssertTrue(pkg.containedDLLs.contains("dxgi"))
+
+        let bottle = try makeSeededBottle(originalSystem32D3D11: nil, originalSysWow64D3D11: nil)
+        let applyManager = GraphicsStackManager(
+            paths: paths,
+            commandRunner: MockCommandRunner(
+                defaultResult: CommandResult(exitCode: 1, stdout: "", stderr: "wineserver: no server running\n")
+            ),
+            httpFetcher: MockHTTPFetcher()
+        )
+        let result = try await applyManager.applyBackend(
+            .dxvk, packageID: pkg.id, to: bottle, engine: makeEngine(supportsWineDLLPathPrepend: true)
+        )
+        XCTAssertTrue(result.warnings.isEmpty)
     }
 
     // MARK: - Package Removal Protection
@@ -690,7 +812,11 @@ final class GraphicsStackManagerTests: XCTestCase {
         return archiveURL
     }
 
-    private func createDXVKNativeTarGz(archiveName: String, wrapperDirName: String) async throws -> URL {
+    private func createDXVKNativeTarGz(
+        archiveName: String,
+        wrapperDirName: String,
+        includeDXGI: Bool = false
+    ) async throws -> URL {
         let stagingRoot = tempDir.appendingPathComponent("stage-\(UUID().uuidString)", isDirectory: true)
         let wrapperDir = stagingRoot.appendingPathComponent(wrapperDirName, isDirectory: true)
         let x64Dir = wrapperDir.appendingPathComponent("x64", isDirectory: true)
@@ -704,6 +830,10 @@ final class GraphicsStackManagerTests: XCTestCase {
         try Data("dxvk-x64-d3d10core".utf8).write(to: x64Dir.appendingPathComponent("d3d10core.dll"))
         try Data("dxvk-x32-d3d11".utf8).write(to: x32Dir.appendingPathComponent("d3d11.dll"))
         try Data("dxvk-x32-d3d10core".utf8).write(to: x32Dir.appendingPathComponent("d3d10core.dll"))
+        if includeDXGI {
+            try Data("dxvk-x64-dxgi".utf8).write(to: x64Dir.appendingPathComponent("dxgi.dll"))
+            try Data("dxvk-x32-dxgi".utf8).write(to: x32Dir.appendingPathComponent("dxgi.dll"))
+        }
 
         let archiveURL = tempDir.appendingPathComponent(archiveName, isDirectory: false)
         let result = try await LiveCommandRunner().run(

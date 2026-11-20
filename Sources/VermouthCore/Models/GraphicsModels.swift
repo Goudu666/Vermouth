@@ -46,6 +46,24 @@ public struct RemoteGraphicsRelease: Codable, Equatable, Identifiable, Sendable 
     public var format: GraphicsArchiveFormat
     public var publishedAt: Date?
 
+    /// 安装后对应的 `GraphicsLayerPackage.id`
+    public var expectedPackageID: String {
+        GraphicsLayerPackage.packageID(backend: backend, version: version)
+    }
+
+    /// 该发行资产是否已在本地安装。
+    ///
+    /// 下载安装的包记录了来源 URL，按 URL 精确比对（同一 release 的 `-repack` 与 `-repack-builtin`
+    /// 是两个不同资产）；本地导入的包没有来源 URL，退回到 id + 格式比对。
+    public func isInstalled(in packages: [GraphicsLayerPackage]) -> Bool {
+        packages.contains { package in
+            if let sourceURL = package.sourceURL {
+                return sourceURL == downloadURL.absoluteString
+            }
+            return package.id == expectedPackageID && package.format == format
+        }
+    }
+
     public init(
         backend: GraphicsBackend,
         tagName: String,
@@ -101,6 +119,36 @@ public struct GraphicsLayerPackage: Codable, Equatable, Identifiable, Sendable {
         self.sha256 = sha256
         self.installedAt = installedAt
         self.containedDLLs = containedDLLs
+    }
+}
+
+extension GraphicsLayerPackage {
+    public static func packageID(backend: GraphicsBackend, version: String) -> String {
+        "\(backend.rawValue)-\(version)"
+    }
+
+    /// DXVK 的 `d3d11` / `d3d10core` 只认 DXVK 自己的 `dxgi` 适配器。包里没有 `dxgi.dll` 时，
+    /// 部署后会落到 Wine 内置 dxgi 上，DXVK 报 `D3D11CoreCreateDevice: Adapter is not a DXVK adapter`。
+    /// 典型是 Gcenx `dxvk-macOS-async-v1.10.3-20230507-repack`（只有 d3d10core/d3d11）。
+    public var isDXVKMissingDXGI: Bool {
+        backend == .dxvk
+            && format == .nativeDLLs
+            && (containedDLLs.contains("d3d11") || containedDLLs.contains("d3d10core"))
+            && !containedDLLs.contains("dxgi")
+    }
+
+    /// `isDXVKMissingDXGI` 时给用户的明确警告；其余情况返回 `nil`。
+    public var missingDXGIWarning: DiagnosticFinding? {
+        guard isDXVKMissingDXGI else { return nil }
+        return DiagnosticFinding(
+            id: "dxvk-package-missing-dxgi-\(id)",
+            category: .graphicsPackageIncomplete,
+            severity: .warning,
+            title: "DXVK 图形包 \(id) 不含 dxgi.dll",
+            explanation: "该包只有 \(containedDLLs.map { "\($0).dll" }.joined(separator: "、"))，DXVK 的 d3d11 需要配套的 DXVK dxgi。在 Wine Stable 等引擎上会退回 Wine 内置 dxgi，日志出现「Adapter is not a DXVK adapter」，D3D11 设备创建失败。",
+            suggestion: "请改用包含 dxgi.dll 的 DXVK 包（如 dxvk-macOS-async-v1.10.3-20230507），或切换回 WineD3D。只有引擎自带兼容 DXVK 的 dxgi 时才适合使用此包。",
+            quickFix: .switchGraphicsBackend(.wined3d)
+        )
     }
 }
 

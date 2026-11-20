@@ -305,6 +305,41 @@ final class RunnerTests: XCTestCase {
         XCTAssertEqual(finding.quickFix, .switchGraphicsBackend(.wined3d))
     }
 
+    func testEnvironmentBuilderWarnsWhenDeployedDXVKPackageLacksDXGI() async throws {
+        // 已部署的 Gcenx -repack 包（无 dxgi）在每次启动时都应提示，而不是让用户只看到 DXVK 的报错
+        let builder = EnvironmentBuilder(paths: paths, systemProber: MockSystemProber())
+        let repack = GraphicsLayerPackage(
+            id: "dxvk-v1.10.3-20230507-repack",
+            backend: .dxvk,
+            version: "v1.10.3-20230507-repack",
+            format: .nativeDLLs,
+            installPath: "/tmp/dxvk/v1.10.3-20230507-repack",
+            containedDLLs: ["d3d10core", "d3d11"]
+        )
+        var bottle = makeBottle()
+        bottle.config.graphicsBackend = .dxvk
+        bottle.config.graphicsLayerVersionID = repack.id
+
+        let plan = try await builder.buildLaunchPlan(
+            bottle: bottle,
+            engine: makeEngine(supportsWineDLLPathPrepend: true),
+            target: .builtinTool(.winecfg, extraArguments: []),
+            graphicsPackage: repack
+        )
+        XCTAssertTrue(plan.warnings.contains { $0.id == "dxvk-package-missing-dxgi-\(repack.id)" })
+
+        var full = repack
+        full.id = "dxvk-v1.10.3-20230507"
+        full.containedDLLs = ["d3d10core", "d3d11", "d3d9", "dxgi"]
+        let fullPlan = try await builder.buildLaunchPlan(
+            bottle: bottle,
+            engine: makeEngine(supportsWineDLLPathPrepend: true),
+            target: .builtinTool(.winecfg, extraArguments: []),
+            graphicsPackage: full
+        )
+        XCTAssertFalse(fullPlan.warnings.contains { $0.category == .graphicsPackageIncomplete })
+    }
+
     func testEnvironmentBuilderMSIInstallerSkipsPEInspectionAndConvertsPaths() async throws {
         // L-009: .msi files are not PE executables; must skip PEInspector and invoke `msiexec /i <WindowsPath>`.
         let builder = EnvironmentBuilder(paths: paths, systemProber: MockSystemProber())

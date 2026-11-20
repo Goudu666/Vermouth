@@ -88,14 +88,14 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
             if release.draft == true {
                 continue
             }
-            for asset in release.assets {
+            let archiveAssets = release.assets.filter { asset in
                 let lowerName = asset.name.lowercased()
-                guard lowerName.hasSuffix(".tar.gz")
+                return lowerName.hasSuffix(".tar.gz")
                     || lowerName.hasSuffix(".tar.xz")
                     || lowerName.hasSuffix(".tgz")
-                else {
-                    continue
-                }
+            }
+            for asset in archiveAssets {
+                let lowerName = asset.name.lowercased()
                 guard let downloadURL = URL(string: asset.browserDownloadURL) else {
                     continue
                 }
@@ -106,7 +106,11 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
                     RemoteGraphicsRelease(
                         backend: backend,
                         tagName: release.tagName,
-                        version: release.tagName,
+                        version: Self.releaseAssetVersion(
+                            tagName: release.tagName,
+                            assetName: asset.name,
+                            releaseHasMultipleArchives: archiveAssets.count > 1
+                        ),
                         assetName: asset.name,
                         downloadURL: downloadURL,
                         sizeBytes: asset.size,
@@ -118,6 +122,32 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
         }
 
         return results
+    }
+
+    /// 同一 release 的多个归档资产（如 `-repack` 与 `-repack-builtin`、`-CrossOver`）必须得到不同的
+    /// 包 id 与安装目录，否则后装的会原地覆盖先装的。
+    ///
+    /// - 只有一个归档、或资产名以 tag 结尾（主资产）：沿用 tag，保持已有包 id 不变；
+    /// - 资产名包含 tag：tag + 资产名中 tag 之后的后缀（`v1.10.3-20230507-repack-builtin`）；
+    /// - 其余：用去掉扩展名的资产名。
+    static func releaseAssetVersion(
+        tagName: String,
+        assetName: String,
+        releaseHasMultipleArchives: Bool
+    ) -> String {
+        guard releaseHasMultipleArchives else { return tagName }
+        var baseName = assetName
+        for suffix in [".tar.gz", ".tar.xz", ".tgz"] where baseName.lowercased().hasSuffix(suffix) {
+            baseName = String(baseName.dropLast(suffix.count))
+            break
+        }
+        if baseName.hasSuffix(tagName) {
+            return tagName
+        }
+        if let tagRange = baseName.range(of: tagName) {
+            return tagName + baseName[tagRange.upperBound...]
+        }
+        return baseName
     }
 
     public func installPackage(
@@ -316,6 +346,9 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
                         )
 
                     case .nativeDLLs:
+                        if let missingDXGI = package.missingDXGIWarning {
+                            warnings.append(missingDXGI)
+                        }
                         let (deployedFiles, backedUpFiles) = try deployNativeDLLsUnlocked(
                             package: package,
                             prefixURL: prefixURL,
@@ -475,7 +508,7 @@ public final class GraphicsStackManager: GraphicsStackManaging, Sendable {
         let installURL = paths.graphicsPackageDirectory(backend: backend, version: trimmedVersion).standardizedFileURL
         try replaceDirectorySafely(from: payloadRoot, to: installURL, fileManager: fileManager)
 
-        let packageID = "\(backend.rawValue)-\(trimmedVersion)"
+        let packageID = GraphicsLayerPackage.packageID(backend: backend, version: trimmedVersion)
         let package = GraphicsLayerPackage(
             id: packageID,
             backend: backend,

@@ -404,6 +404,11 @@ struct EngineSettingsView: View {
 
                 PillBadge(text: pkg.format.displayName, tint: .teal)
 
+                if pkg.isDXVKMissingDXGI {
+                    PillBadge(text: "缺 dxgi.dll", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                        .help(pkg.missingDXGIWarning?.explanation ?? "")
+                }
+
                 if !usingBottles.isEmpty {
                     PillBadge(
                         text: "使用中: \(usingBottles.map(\.name).joined(separator: ", "))",
@@ -521,10 +526,8 @@ struct EngineSettingsView: View {
     }
 
     private func remoteReleaseRow(_ release: RemoteGraphicsRelease) -> some View {
-        let expectedPackageID = "\(release.backend.rawValue)-\(release.version)"
-        let isAlreadyInstalled = viewModel.installedGraphicsPackages.contains {
-            $0.id == expectedPackageID || $0.sourceURL == release.downloadURL.absoluteString
-        }
+        let installedPackage = viewModel.installedGraphicsPackages.first { release.isInstalled(in: [$0]) }
+        let isAlreadyInstalled = installedPackage != nil
         let progress = viewModel.activeDownloadProgress[release.id]
 
         return HStack(spacing: 12) {
@@ -534,6 +537,11 @@ struct EngineSettingsView: View {
                         .font(.subheadline.weight(.semibold))
                     PillBadge(text: release.tagName, tint: release.backend.badgeTint)
                     PillBadge(text: release.format.displayName, tint: .teal)
+                    // 未下载的资产没有 DLL 清单，只对已安装的包标注
+                    if installedPackage?.isDXVKMissingDXGI == true {
+                        PillBadge(text: "缺 dxgi.dll", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                            .help(installedPackage?.missingDXGIWarning?.explanation ?? "")
+                    }
                     if let size = release.sizeBytes {
                         PillBadge(text: VermouthFormatters.formatBytes(size), tint: .secondary)
                     }

@@ -17,6 +17,8 @@ public enum DiagnosticCategory: String, Codable, Equatable, CaseIterable, Sendab
     case syncMismatch
     case rosettaMissing
     case fontOrLocale
+    /// 图形包内容与引擎不配套（如 DXVK 包缺 `dxgi.dll`）
+    case graphicsPackageIncomplete
 }
 
 /// 类型化一键修复建议动作（由用户显式触发，绝不静默修改宿主机环境）。

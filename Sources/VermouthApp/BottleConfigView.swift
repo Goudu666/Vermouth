@@ -269,7 +269,7 @@ struct BottleConfigView: View {
                         Text("尚未安装本地包").tag("")
                     } else {
                         ForEach(matchingPackagesForCurrentBackend) { pkg in
-                            Text("\(pkg.version) [\(pkg.format.displayName)]").tag(pkg.id)
+                            Text("\(pkg.version) [\(pkg.format.displayName)]\(pkg.isDXVKMissingDXGI ? " ⚠️ 缺 dxgi" : "")").tag(pkg.id)
                         }
                     }
                 }
